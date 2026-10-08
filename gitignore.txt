@@ -1,0 +1,31 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+
+# ---- Build outputs (PyInstaller) ----
+build/
+dist/
+*.spec
+
+# ---- Point cloud and output data (too large for GitHub) ----
+*.las
+*.laz
+*.xyz
+*.asc
+*.txt.bak
+*.tif
+*.tiff
+*.ply
+*.e57
+
+# ---- IDE / editor ----
+.vscode/
+.idea/
+
+# ---- OS files ----
+.DS_Store
+Thumbs.db
+desktop.ini
