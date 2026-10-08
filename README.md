@@ -23,7 +23,7 @@ A desktop application for viewing, cleaning, and analysing point cloud data, wit
 
 **Surface generation**
 - TIN (triangulated irregular network) generation
-- DEM gridding, including a shoalest-depth mode that keeps the true position of the shoalest sounding in each cell, as required for hydrographic products
+- DEM gridding, including a shoalest-depth mode that keeps the true position of the shoalest sounding(SDTP) in each cell, as required for hydrographic products
 
 **Cross-sections**
 - Draw a section line freely on the map view and extract the profile of the point cloud or surface along it
