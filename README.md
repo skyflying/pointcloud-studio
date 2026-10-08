@@ -3,7 +3,7 @@
 A desktop application for viewing, cleaning, and analysing point cloud data, with a focus on hydrographic and survey workflows. PointCloud Studio lets you import point clouds from common survey formats, inspect and edit them interactively in 3D, generate TIN and DEM surfaces, and cut cross-sections along freely drawn lines.
 
 <!-- Replace with a real screenshot: save it as docs/screenshot.png -->
-![PointCloud Studio screenshot](docs/screenshot.png)
+![PointCloud Studio screenshot](blov/screenshot.png)
 
 ---
 
