@@ -71,13 +71,20 @@ def _text_format(pc, name, idx, decimals):
 
 
 # ---------------------------------------------------------------- text
-def write_text(pc, idx, path, columns, delimiter=" ", decimals=3, header=True, progress=None):
+def write_text(pc, idx, path, columns, delimiter=" ", decimals=3, header=True, progress=None, z_as_depth=False):
+    """z_as_depth: write the Z column as depth (positive down) — header 'Depth'."""
     fmts = [_text_format(pc, c, idx, decimals) for c in columns]
+    zc = columns.index("Z") if (z_as_depth and "Z" in columns) else None
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         if header:
-            f.write(delimiter.join(columns) + "\n")
+            names = list(columns)
+            if zc is not None:
+                names[zc] = "Depth"
+            f.write(delimiter.join(names) + "\n")
         for s, ci in _chunks(idx):
             arr = np.column_stack([_values(pc, c, ci).astype(np.float64) for c in columns])
+            if zc is not None:
+                arr[:, zc] *= -1.0
             np.savetxt(f, arr, fmt=fmts, delimiter=delimiter)
             _report(progress, s + len(ci), len(idx))
 

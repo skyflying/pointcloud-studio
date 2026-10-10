@@ -58,6 +58,32 @@ class _BaseDialog(QDialog):
             self.grp.addButton(rb)
             self.lay.addWidget(rb)
         self.grp.buttonToggled.connect(lambda *_: self._update())
+        self.class_counts = counts.get("classes") or {}
+        self.ed_classes = None
+        if self.class_counts:
+            from PySide6.QtWidgets import QLineEdit
+            row = QHBoxLayout()
+            row.addWidget(_muted("Only classes"))
+            self.ed_classes = QLineEdit()
+            self.ed_classes.setPlaceholderText("all classes   (e.g. 2 = ground, or 2, 9)")
+            self.ed_classes.setToolTip("Comma-separated LAS classes to use, e.g. 2 for a terrain model from ground "
+                                       "points only. Empty = all classes.")
+            self.ed_classes.textChanged.connect(lambda *_: self._update())
+            row.addWidget(self.ed_classes, 1)
+            self.lay.addLayout(row)
+            names = {1: "unclassified", 2: "ground", 3: "low veg.", 4: "medium veg.", 5: "high veg.", 6: "building",
+                     9: "water", 40: "bathymetric", 41: "water surface"}
+            avail = " · ".join(f"{c}{' ' + names[c] if c in names else ''} ({n:,})"
+                               for c, n in sorted(self.class_counts.items()))
+            lab = _muted(f"Available: {avail}")
+            lab.setWordWrap(True)
+            self.lay.addWidget(lab)
+
+    def classes(self):
+        """Selected classes (list of int) or None for all; raises ValueError on bad input."""
+        if self.ed_classes is None or not self.ed_classes.text().strip():
+            return None
+        return sorted({int(t) for t in self.ed_classes.text().replace(";", ",").split(",") if t.strip()})
 
     def _finish(self, ok_text):
         self.lay.addStretch()
@@ -81,7 +107,14 @@ class _BaseDialog(QDialog):
         return "selected" if self.rb_sel.isChecked() else "active"
 
     def n_source(self):
-        return self.counts[self.source()]
+        n = self.counts[self.source()]
+        try:
+            cls = self.classes()
+        except ValueError:
+            return 0
+        if cls:
+            n = min(n, sum(self.class_counts.get(c, 0) for c in cls))
+        return n
 
     def showEvent(self, e):
         super().showEvent(e)

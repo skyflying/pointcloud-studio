@@ -74,7 +74,19 @@ class XyzImportDialog(QDialog):
         self.cmb_delim.setMinimumWidth(160)
         for key, (label, _) in DELIMITERS.items():
             self.cmb_delim.addItem(label, key)
-        for text, w in (("Start at line", self.spin_start), ("Delimiter", self.cmb_delim)):
+        self.cmb_kind = QComboBox()
+        self.cmb_kind.addItem("Point cloud", False)
+        self.cmb_kind.addItem("DEM grid (regular XYZ grid)", True)
+        self.cmb_kind.setToolTip("A regular grid of X Y Z values is loaded as a DEM surface")
+        self.cmb_z = QComboBox()
+        self.cmb_z.addItem("Elevation (Z, up +)", False)
+        self.cmb_z.addItem("Depth (down +)", True)
+        self.cmb_z.setToolTip("Hydrographic XYZ files often store depths as positive numbers (down +).\n"
+                              "They are converted to elevation (Z = −depth) so land and sea data share one convention;\n"
+                              "export can write them back as depths.")
+        self.cmb_z.currentIndexChanged.connect(lambda: self._validate())
+        for text, w in (("Start at line", self.spin_start), ("Delimiter", self.cmb_delim), ("Import as", self.cmb_kind),
+                        ("Z values are", self.cmb_z)):
             lbl = QLabel(text)
             lbl.setObjectName("muted")
             row.addWidget(lbl)
@@ -187,7 +199,11 @@ class XyzImportDialog(QDialog):
         if err:
             self.lbl_msg.setText(f"<span style='color:{C['danger']}'>●  {err}</span>")
         else:
-            self.lbl_msg.setText(f"<span style='color:{C['success']}'>●  {len(roles)} columns · ready to import</span>")
+            hint = ""
+            if self.z_hint() == "positive" and not self.cmb_z.currentData():
+                hint = (f"<br><span style='color:#ff9f43'>●  All Z values in the preview are positive. "
+                        f"If they are depths (down +), set “Z values are” to Depth.</span>")
+            self.lbl_msg.setText(f"<span style='color:{C['success']}'>●  {len(roles)} columns · ready to import</span>{hint}")
         self.btn_ok.setEnabled(not err)
 
     # ---------- result ----------
@@ -197,4 +213,24 @@ class XyzImportDialog(QDialog):
             delim_key=self.cmb_delim.currentData(),
             column_roles=[c.currentText() for c in self.combos],
             encoding=self.encoding,
+            as_grid=bool(self.cmb_kind.currentData()),
+            z_is_depth=bool(self.cmb_z.currentData()),
         )
+
+    def z_hint(self):
+        """'positive' if every Z value in the preview is > 0 (could be depths), else ''."""
+        try:
+            zc = [c.currentText() for c in self.combos].index("Z")
+        except ValueError:
+            return ""
+        from fileio.xyz_reader import split_line
+        d = self.cmb_delim.currentData()
+        st = self.spin_start.value() - 1
+        vals = []
+        for line in self.lines[st:st + 200]:
+            tok = split_line(line, d)
+            try:
+                vals.append(float(tok[zc]))
+            except (ValueError, IndexError):
+                pass
+        return "positive" if vals and min(vals) > 0 else ""

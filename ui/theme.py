@@ -93,6 +93,7 @@ QFrame#card {{ background: {surface}; border: 1px solid {border}; border-radius:
 QFrame#card QLabel {{ background: transparent; }}
 QWidget#sidebar {{ background: {bg}; border-left: 1px solid {border}; }}
 QWidget#emptyState {{ background: {bg}; }}
+QWidget#dialogBody {{ background: {bg}; }}
 QLabel#sectionTitle {{ color: {muted}; font-size: 11px; font-weight: 700; }}
 QLabel#muted {{ color: {muted}; }}
 QLabel#title {{ font-size: 20px; font-weight: 600; }}

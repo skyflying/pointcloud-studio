@@ -128,6 +128,9 @@ class Dem:
     method: str
     version: int = 0
     meta: dict = field(default_factory=dict)
+    cvals: np.ndarray | None = None  # Δ layers: values to colour by (same shape as z), diverging palette
+    crange: tuple | None = None       # (vmin, vmax) for cvals
+    cpalette: str = "Diverging"       # palette for cvals ("Turbo" for slope maps)
     tx: np.ndarray | None = None    # shoal method: true X of the sounding chosen per cell (NaN = none)
     ty: np.ndarray | None = None
 

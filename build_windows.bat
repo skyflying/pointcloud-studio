@@ -17,11 +17,14 @@ if defined PYTHON_EXE if exist "%PYTHON_EXE%" set "PYEXE=%PYTHON_EXE%"
 REM 2) python.org installs first (default folders, then the py launcher) - NOT Anaconda:
 REM    Anaconda's Python adds anaconda3\Library\bin to the DLL search path, where its own Qt lives;
 REM    that Qt then clashes with pip's PySide6 ("DLL load failed ... procedure could not be found").
-for %%V in (312 313 311 310) do (
-  if not defined PYEXE if exist "%LocalAppData%\Programs\Python\Python%%V\python.exe" call :probe "%LocalAppData%\Programs\Python\Python%%V\python.exe"
-  if not defined PYEXE if exist "%ProgramFiles%\Python%%V\python.exe" call :probe "%ProgramFiles%\Python%%V\python.exe"
-  if not defined PYEXE if exist "C:\Python%%V\python.exe" call :probe "C:\Python%%V\python.exe"
+REM    Classic installer: ...\Programs\Python\Python312   New "Python Install Manager": ...\Python\pythoncore-3.12-64
+for %%V in (12 13 11 10) do (
+  if not defined PYEXE if exist "%LocalAppData%\Programs\Python\Python3%%V\python.exe" call :probe "%LocalAppData%\Programs\Python\Python3%%V\python.exe"
+  if not defined PYEXE if exist "%LocalAppData%\Python\pythoncore-3.%%V-64\python.exe" call :probe "%LocalAppData%\Python\pythoncore-3.%%V-64\python.exe"
+  if not defined PYEXE if exist "%ProgramFiles%\Python3%%V\python.exe" call :probe "%ProgramFiles%\Python3%%V\python.exe"
+  if not defined PYEXE if exist "C:\Python3%%V\python.exe" call :probe "C:\Python3%%V\python.exe"
 )
+if not defined PYEXE call :probe py -V:3.12
 if not defined PYEXE call :probe py -3.12
 if not defined PYEXE call :probe py -3
 
@@ -49,10 +52,16 @@ if errorlevel 1 if not defined ALLOW_CONDA (
   echo   Anaconda ships its own Qt and changes the DLL search path, which breaks PySide6
   echo   ^("DLL load failed while importing QtCore: The specified procedure could not be found"^).
   echo.
-  echo   Please install the standard Python 3.12 64-bit from python.org ^(Anaconda can stay installed^):
-  echo     https://www.python.org/downloads/windows/
-  echo   In the installer you may leave "Add python.exe to PATH" unticked - this script finds it.
+  echo   No python.org Python 3.10-3.13 was found in:
+  echo     %LocalAppData%\Programs\Python\Python3xx
+  echo     %LocalAppData%\Python\pythoncore-3.xx-64
+  echo     %ProgramFiles%\Python3xx   and C:\Python3xx   and the py launcher
+  echo.
+  echo   Install the standard Python 3.12 64-bit ^(Anaconda can stay installed^):
+  echo     https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe
+  echo   Click "Install Now" - "Add python.exe to PATH" may stay unticked.
   echo   Then delete the .venv folder here and run build_windows.bat again.
+  echo   ^(Python installed elsewhere?  set PYTHON_EXE=C:\path\to\python.exe  then run this file^)
   pause & exit /b 1
 )
 

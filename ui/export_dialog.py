@@ -67,6 +67,11 @@ class ExportDialog(QDialog):
             self.rb[key] = rb
             lay.addWidget(rb)
         self.rb["active"].setChecked(True)
+        self.chk_noise = QCheckBox(f"Exclude rejected points (reject classes · {counts.get('noise', 0):,})")
+        self.chk_noise.setToolTip("Unticked: rejected points stay in the LAS/LAZ file, flagged with their reject class (e.g. 7 / 18)")
+        self._has_noise = counts.get("noise", 0) > 0
+        self.chk_noise.setVisible(self._has_noise)
+        lay.addWidget(self.chk_noise)
         self.chk_trash = QCheckBox(f"Also save the trash ({counts['trash']:,} points) to a separate “_trash” file")
         self.chk_trash.setEnabled(counts["trash"] > 0)
         lay.addWidget(self.chk_trash)
@@ -200,10 +205,15 @@ class ExportDialog(QDialog):
         self.spin_dec.setSuffix(" decimals")
         self.chk_header = QCheckBox("Write a header line with column names")
         self.chk_header.setChecked(True)
+        self.chk_zdepth = QCheckBox("Write Z as depth (positive down)")
+        self.chk_zdepth.setToolTip("Inside the program Z is always elevation (up +). Tick to write depths, "
+                                   "e.g. for hydrographic deliverables.")
+        self.chk_zdepth.setChecked(bool(self.pc.source.get("z_is_depth")) or bool(self.pc.source.get("z_flipped")))
         form.addRow(_muted("Delimiter"), self.cmb_delim)
         form.addRow(_muted("X / Y / Z"), self.spin_dec)
         v.addLayout(form)
         v.addWidget(self.chk_header)
+        v.addWidget(self.chk_zdepth)
         return w
 
     # ---------- behaviour ----------
@@ -279,7 +289,8 @@ class ExportDialog(QDialog):
         fmt = self.fmt()
         if fmt == "xyz":
             opts = dict(columns=self.columns(), delimiter=TEXT_DELIMITERS[self.cmb_delim.currentData()][1],
-                        decimals=self.spin_dec.value(), header=self.chk_header.isChecked())
+                        decimals=self.spin_dec.value(), header=self.chk_header.isChecked(),
+                        z_as_depth=self.chk_zdepth.isChecked())
         elif self.src_is_las:
             opts = {}
         else:
@@ -287,4 +298,5 @@ class ExportDialog(QDialog):
             opts = dict(version=self.cmb_ver.currentText(), scale=float(self.cmb_scale.currentText()),
                         epsg=int(epsg) if epsg else None, extra_dims=self.chk_extra.isChecked())
         return dict(content=self.content(), fmt=fmt, path=self.ed_path.text().strip(), opts=opts,
+                    exclude_noise=self.chk_noise.isChecked() and self._has_noise,
                     trash_path=self.trash_path() if self._also_trash() else None)

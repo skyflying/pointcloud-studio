@@ -5,7 +5,7 @@ import numpy as np
 from vispy import scene
 from vispy.visuals.filters import WireframeFilter
 
-from render.colormap import map_scalar
+from render.colormap import ColorScale, map_scalar
 
 LIGHT = np.array([-0.5, 0.5, 0.7071])  # from NW, 45° altitude
 LIGHT = LIGHT / np.linalg.norm(LIGHT)
@@ -63,6 +63,8 @@ class SurfaceLayer:
         self.mesh.attach(self.wire)
         self.mesh.visible = False
         self.V = self.F = self.z = self.shade = None
+        self.cvals = None               # own colour values (Δ layers) + own diverging scale
+        self.own_scale = None
         self.opacity = 1.0
         self.shading = True
         self._set_gl()
@@ -88,7 +90,11 @@ class SurfaceLayer:
     def recolor(self, scale):
         if self.V is None:
             return
-        c = map_scalar(self.z, scale)
+        if self.cvals is not None:
+            c = map_scalar(self.cvals, self.own_scale)
+            c[~np.isfinite(self.cvals)] = (0.35, 0.37, 0.40, 1.0)
+        else:
+            c = map_scalar(self.z, scale)
         c[:, :3] *= self.shade[:, None]
         c[:, 3] = self.opacity
         self.mesh.set_data(vertices=self.V, faces=self.F, vertex_colors=c)
@@ -100,4 +106,5 @@ class SurfaceLayer:
 
     def clear(self):
         self.V = self.F = self.z = self.shade = None
+        self.cvals = self.own_scale = None
         self.mesh.visible = False

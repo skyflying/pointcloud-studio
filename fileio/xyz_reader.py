@@ -129,7 +129,8 @@ def validate_roles(roles):
     return ""
 
 
-def read_xyz(path, skip_rows, delim_key, column_roles, encoding=None):
+def read_xyz(path, skip_rows, delim_key, column_roles, encoding=None, z_is_depth=False):
+    """z_is_depth: the Z column holds depths (positive down) → stored internally as elevation (Z = −depth)."""
     err = validate_roles(column_roles)
     if err:
         raise ValueError(err)
@@ -163,4 +164,8 @@ def read_xyz(path, skip_rows, delim_key, column_roles, encoding=None):
         "delimiter": delim_key, "roles": list(column_roles),
         "encoding": encoding, "dropped_rows": n_raw - len(df),
     }
-    return PointCloud(xyz, attrs, source, name=os.path.basename(path))
+    if z_is_depth:
+        xyz[:, 2] *= -1.0
+        source["z_is_depth"] = True
+    pc = PointCloud(xyz, attrs, source, name=os.path.basename(path))
+    return pc

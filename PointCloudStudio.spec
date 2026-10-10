@@ -34,7 +34,9 @@ hiddenimports = (
     collect_submodules("rasterio")
     + collect_submodules("vispy.app.backends")
     + collect_submodules("vispy.visuals")
-    + ["PySide6.QtTest",            # required by VisPy's PySide6 backend — do not exclude
+    + ["shapefile",                 # pyshp (route import / contour export)
+       "contourpy",
+       "PySide6.QtTest",            # required by VisPy's PySide6 backend — do not exclude
        "lazrs", "laspy.compression", "pyproj.database", "scipy.spatial._qhull",
        "scipy.ndimage", "PySide6.QtOpenGL", "PySide6.QtOpenGLWidgets", "PySide6.QtSvg"]
 )

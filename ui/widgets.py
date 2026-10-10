@@ -16,7 +16,7 @@ def muted(text):
 
 
 class Card(QFrame):
-    def __init__(self, title):
+    def __init__(self, title, closable=False, on_close=None):
         super().__init__()
         self.setObjectName("card")
         self.body = QVBoxLayout(self)
@@ -27,6 +27,14 @@ class Card(QFrame):
         self.title.setObjectName("sectionTitle")
         self.header.addWidget(self.title)
         self.header.addStretch()
+        if closable:
+            from PySide6.QtWidgets import QToolButton
+            b = QToolButton()
+            b.setText("✕")
+            b.setToolTip("Hide (View → Navigation Help shows it again)")
+            b.setAutoRaise(True)
+            b.clicked.connect(on_close or self.hide)
+            self.header.addWidget(b)
         self.body.addLayout(self.header)
 
 
@@ -101,10 +109,10 @@ class SelectionCard(Card):
         for b in (self.btn_copy, btn_inv, btn_clear):
             row.addWidget(b)
         self.body.addLayout(row)
-        self.btn_delete = QPushButton(" Delete to Trash")
+        self.btn_delete = QPushButton(" Reject")
         self.btn_delete.setIcon(icon("trash", "#ff6b6b"))
         self.btn_delete.setProperty("danger", True)
-        self.btn_delete.setToolTip("Move selected points to the trash (Delete)")
+        self.btn_delete.setToolTip("Reject the selected points (Delete): LAS → reject class (7 / 18 / …) or Trash; other formats → Trash")
         self.btn_delete.clicked.connect(on_delete)
         self.body.addWidget(self.btn_delete)
         self.setVisible(False)

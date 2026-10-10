@@ -96,3 +96,29 @@ class RestoreCommand(Command):
     @property
     def restored_indices(self):
         return np.concatenate([ix for _, ix in self.saved]) if self.saved else np.empty(0, np.int64)
+
+
+class ClassifyCommand(Command):
+    """Set LAS classes (e.g. 7 = noise) on points; undo restores their previous classes."""
+
+    def __init__(self, pc, idx, new_class=None, restore=False, values=None, label=None):
+        self.pc = pc
+        self.idx = np.asarray(idx, dtype=np.int64)
+        pc.ensure_classification()
+        self.old = np.array(pc.attrs["Classification"][self.idx])
+        self.reselect = values is None               # reject / accept: undo re-selects the points
+        if values is not None:                       # per-point classes (classification run)
+            self.new = np.asarray(values, dtype=self.old.dtype)
+            self.label = label or f"Classify {len(self.idx):,} points"
+        elif restore:
+            self.new = pc.original_class(self.idx)
+            self.label = f"Accept {len(self.idx):,} points"
+        else:
+            self.new = np.full(len(self.idx), new_class, dtype=self.old.dtype)
+            self.label = f"Reject {len(self.idx):,} points (Class {new_class})"
+
+    def do(self):
+        self.pc.set_class(self.idx, self.new)
+
+    def undo(self):
+        self.pc.set_class(self.idx, self.old)

@@ -10,7 +10,7 @@ from vispy import scene
 from vispy.visuals.transforms import STTransform
 
 from render.colormap import (
-    AUTO_PERCENTILES, DEFAULT_PALETTE, SCALAR_MODES, ColorScale, auto_range, compute_colors,
+    AUTO_PERCENTILES, symmetric_range, DEFAULT_PALETTE, SCALAR_MODES, ColorScale, auto_range, compute_colors,
     full_range, map_scalar, scalar_values,
 )
 from render.surfaces import SurfaceLayer, dem_mesh, tin_mesh
@@ -96,10 +96,35 @@ class PointCloudViewer:
         self.sec_verts.order = 4
         self.sec_verts.visible = False
 
+        self.sub_lines = scene.visuals.Line(parent=self.view.scene, method="gl", width=2.0)
+        self.sub_lines.set_gl_state("translucent", depth_test=False)
+        self.sub_lines.order = 5
+        self.sub_lines.visible = False
+        self.sub_fill = scene.visuals.Mesh(parent=self.view.scene)
+        self.sub_fill.set_gl_state("translucent", depth_test=False)
+        self.sub_fill.order = 3
+        self.sub_fill.visible = False
+
+        self.route_lines = scene.visuals.Line(parent=self.view.scene, method="gl", width=2.5)
+        self.route_lines.set_gl_state("translucent", depth_test=False)
+        self.route_lines.order = 4
+        self.route_lines.visible = False
+        self.route_text = scene.visuals.Text(parent=self.view.scene, color=(0.30, 0.79, 0.94, 1.0),
+                                             font_size=9, anchor_x="left", anchor_y="bottom")
+        self.route_text.set_gl_state("translucent", depth_test=False)
+        self.route_text.order = 6
+        self.route_text.visible = False
+
         self.surfaces = {"tin": SurfaceLayer(self.view.scene, "tin"),
                          "dem": SurfaceLayer(self.view.scene, "dem")}
 
-        self.pc = None
+        self.pc = None                  # the bound (editable / primary) point cloud, may be None
+        self.origin = None              # shared project display origin (world coords)
+        self.bbox = None                # project bounding box (lo, hi) for fitting the view
+        self.refs = {}                  # reference point clouds: id → dict(pc, markers, idx, vals)
+        self.contours = {}              # contour layers: id → Line visual
+        self.contour_labels = {}        # id → Text visual (depth / elevation values)
+        self._hgrid = None              # cached height map of everything displayed (for picking / draping)
         self.display_idx = np.empty(0, dtype=np.int64)
         self.sel_idx = np.empty(0, dtype=np.int64)
         self._pos = self._colors = self._sel_pos = None
@@ -117,15 +142,75 @@ class PointCloudViewer:
         return self.canvas.native
 
     # ---------- data ----------
-    def set_pointcloud(self, pc):
+    def set_pointcloud(self, pc, reset=True):
+        """Bind the primary (editable) cloud. reset=True starts a new project view."""
+        self._invalidate_height()
         self.pc = pc
-        for sc in self.scales.values():
-            sc.auto, sc.vmin, sc.vmax = True, None, None
-        for layer in self.surfaces.values():
-            layer.clear()
+        if reset:
+            for sc in self.scales.values():
+                sc.auto, sc.vmin, sc.vmax, sc.amin, sc.amax = True, None, None, None, None
+            for layer in self.surfaces.values():
+                layer.clear()
+            for rid in list(self.refs):
+                self.remove_reference(rid)
+        if pc is not None and self.origin is not None:
+            pc.offset = self.origin.copy()
         self.set_selection(np.empty(0, dtype=np.int64))
         self.set_trash_view(np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64))
-        self.refresh(reset_camera=True)
+        if pc is None:
+            self.markers.visible = False
+            self.display_idx = np.empty(0, dtype=np.int64)
+            self._pos = self._cvals = None
+            if reset:
+                self.fit_view()
+            self._notify()
+            return
+        self.refresh(reset_camera=reset)
+
+    def set_origin(self, origin, bbox=None):
+        self.origin = None if origin is None else np.asarray(origin, dtype=np.float64)
+        self.bbox = bbox
+
+    # ---------- reference point clouds (read-only layers) ----------
+    def add_reference(self, rid, pc):
+        self._invalidate_height()
+        self.remove_reference(rid)
+        m = scene.visuals.Markers(parent=self.view.scene)
+        m.set_gl_state("opaque", depth_test=True)
+        m.order = 0
+        try:
+            m.antialias = 0
+        except Exception:
+            pass
+        m.transform = STTransform(scale=(1.0, 1.0, self.z_scale))
+        pc.offset = self.origin.copy()
+        idx = self._decimate(pc.active_indices())
+        self.refs[rid] = dict(pc=pc, markers=m, idx=idx, pos=pc.local_xyz(idx),
+                              vals=pc.xyz[idx, 2].astype(np.float32), visible=True)
+        self._recolor_ref(rid)
+        self.canvas.update()
+        self._notify()
+
+    def remove_reference(self, rid):
+        self._invalidate_height()
+        r = self.refs.pop(rid, None)
+        if r is not None:
+            r["markers"].parent = None
+            self.canvas.update()
+
+    def set_reference_visible(self, rid, on):
+        self._invalidate_height()
+        if rid in self.refs:
+            self.refs[rid]["visible"] = bool(on)
+            self.refs[rid]["markers"].visible = bool(on)
+            self.canvas.update()
+            self._notify()
+
+    def _recolor_ref(self, rid):
+        r = self.refs[rid]
+        c = map_scalar(r["vals"], self._ensure_elev_scale())
+        r["markers"].set_data(r["pos"], face_color=c, size=self.point_size, edge_width=0, edge_color=c)
+        r["markers"].visible = r["visible"]
 
     def _decimate(self, idx):
         if len(idx) <= self.max_display:
@@ -134,6 +219,7 @@ class PointCloudViewer:
         return idx[rng.random(len(idx), dtype=np.float32) < self.max_display / len(idx)]
 
     def refresh(self, reset_camera=False):
+        self._invalidate_height()
         pc = self.pc
         if pc is None:
             return
@@ -214,20 +300,48 @@ class PointCloudViewer:
     def scale_mode(self):
         if self.color_mode in SCALAR_MODES:
             return self.color_mode
-        return "elevation" if self.any_surface_visible() else None
+        return "elevation" if (self.any_surface_visible() or self.any_reference_visible()) else None
 
     @property
     def scale(self):
         return self.scales.get(self.scale_mode)
 
+    def any_reference_visible(self):
+        return any(r["visible"] for r in self.refs.values())
+
     def _active_values(self, mode=None):
-        return scalar_values(self.pc, self.pc.active_indices(), mode or self.scale_mode)
+        mode = mode or self.scale_mode
+        if self.pc is not None and (mode != "elevation" or self.color_mode == "elevation"
+                                    or not (self.refs or self.any_surface_visible())):
+            v = scalar_values(self.pc, self.pc.active_indices(), mode)
+            if v is not None:
+                return v
+        # elevation of everything shown: bound cloud, reference clouds, surfaces
+        parts = []
+        if self.pc is not None:
+            parts.append(self.pc.xyz[self.pc.active_indices()[::max(1, self.pc.n_active // 500_000)], 2])
+        parts += [r["vals"][::max(1, len(r["vals"]) // 500_000)] for r in self.refs.values()]
+        parts += [l.z[::max(1, len(l.z) // 500_000)] for l in self.surfaces.values() if l.z is not None]
+        parts = [np.asarray(p, np.float32) for p in parts if len(p)]
+        return np.concatenate(parts) if parts else np.array([0.0, 1.0], np.float32)
 
     def _ensure_elev_scale(self):
         sc = self.scales["elevation"]
-        if sc.vmin is None and self.pc is not None:
-            self._apply_axis(sc, *auto_range(self._active_values("elevation"), *AUTO_PERCENTILES["elevation"]))
+        if sc.vmin is None and (self.pc is not None or self.refs
+                                or any(l.z is not None for l in self.surfaces.values())):
+            vals = self._active_values("elevation")
+            self._apply_axis(sc, *auto_range(vals, *AUTO_PERCENTILES["elevation"]))
+            self._auto_palette(sc, vals)
         return sc
+
+    @staticmethod
+    def _auto_palette(sc, vals):
+        """Land + sea data (spanning 0 m): Topo-bathy, unless the user chose a palette."""
+        if getattr(sc, "user_palette", False) or len(vals) == 0:
+            return
+        lo, hi = float(np.nanmin(vals)), float(np.nanmax(vals))
+        if lo < 0 < hi and sc.palette in ("Rainbow", "Topo-bathy"):
+            sc.palette = "Topo-bathy"
 
     @staticmethod
     def _apply_axis(sc, lo, hi):
@@ -253,16 +367,30 @@ class PointCloudViewer:
         self._cvals = scalar_values(self.pc, self.display_idx, self.color_mode) if sc else None
         if self._cvals is not None:
             if sc.auto or sc.vmin is None:
-                self._apply_axis(sc, *auto_range(self._active_values(self.color_mode),
-                                                 *AUTO_PERCENTILES[self.color_mode]))
+                rng = symmetric_range if self.color_mode == "deviation" else auto_range
+                vals = self._active_values(self.color_mode)
+                self._apply_axis(sc, *rng(vals, *AUTO_PERCENTILES[self.color_mode]))
+                if self.color_mode == "elevation":
+                    self._auto_palette(sc, vals)
             self._colors = map_scalar(self._cvals, sc)
         else:
             self._colors = compute_colors(self.pc, self.display_idx, self.color_mode)
+        self._mark_noise()
+
+    NOISE_RGBA = (1.0, 0.33, 0.22, 1.0)
+
+    def _mark_noise(self):
+        pc = self.pc
+        if pc is not None and pc.can_classify and not pc.hide_noise and self._colors is not None:
+            nm = pc.noise_mask()[self.display_idx]
+            if nm.any():
+                self._colors[nm] = self.NOISE_RGBA
 
     def recolor(self):
         """Fast path: re-map cached scalar values after a range / palette change."""
         if self._cvals is not None and self._pos is not None and self.color_mode in SCALAR_MODES:
             self._colors = map_scalar(self._cvals, self.scale)
+            self._mark_noise()
             self._upload()
         if self.scale_mode == "elevation":
             self.recolor_surfaces()
@@ -272,12 +400,27 @@ class PointCloudViewer:
     def any_surface_visible(self):
         return any(l.V is not None and l.mesh.visible for l in self.surfaces.values())
 
-    def set_surface(self, kind, obj):
-        layer = self.surfaces[kind]
+    def set_surface(self, key, obj):
+        """Show a Tin or Dem under `key` (any hashable, e.g. a dataset id); obj=None removes it."""
+        self._invalidate_height()
+        from core.surface import Tin
+        if key not in self.surfaces:
+            if obj is None:
+                return
+            self.surfaces[key] = SurfaceLayer(self.view.scene, str(key))
+        layer = self.surfaces[key]
         if obj is None:
             layer.clear()
         else:
-            V, F, z = tin_mesh(obj, self.pc.offset) if kind == "tin" else dem_mesh(obj, self.pc.offset)
+            V, F, z = tin_mesh(obj, self.origin) if isinstance(obj, Tin) else dem_mesh(obj, self.origin)
+            if getattr(obj, "cvals", None) is not None:
+                from render.colormap import ColorScale
+                layer.cvals = obj.cvals.ravel().astype(np.float32)
+                lo, hi = obj.crange
+                layer.own_scale = ColorScale(palette=getattr(obj, "cpalette", "Diverging"), vmin=lo, vmax=hi,
+                                             amin=lo, amax=hi, auto=False)
+            else:
+                layer.cvals = layer.own_scale = None
             layer.mesh.transform = STTransform(scale=(1.0, 1.0, self.z_scale))
             layer.set_data(V, F, z, self._ensure_elev_scale(), self.z_scale)
             layer.mesh.visible = True
@@ -289,11 +432,17 @@ class PointCloudViewer:
         for layer in self.surfaces.values():
             if layer.V is not None:
                 layer.recolor(sc)
+        for rid in self.refs:
+            self._recolor_ref(rid)
 
     def set_layer_visible(self, name, on):
+        self._invalidate_height()
         if name == "points":
             self.markers.visible = bool(on) and len(self.display_idx) > 0
-        else:
+        elif name in self.refs:
+            self.set_reference_visible(name, on)
+            return
+        elif name in self.surfaces:
             self.surfaces[name].mesh.visible = bool(on) and self.surfaces[name].V is not None
         self.canvas.update()
         self._notify()
@@ -303,7 +452,8 @@ class PointCloudViewer:
         self.canvas.update()
 
     def set_wireframe(self, name, on):
-        self.surfaces[name].wire.enabled = bool(on)
+        if name in self.surfaces:
+            self.surfaces[name].wire.enabled = bool(on)
         self.canvas.update()
 
     def set_hillshade(self, on):
@@ -317,6 +467,8 @@ class PointCloudViewer:
         sc = self.scale
         if sc is None:
             return
+        if "palette" in changes:
+            sc.user_palette = True
         if "amin" in changes or "amax" in changes:
             self._apply_axis(sc, changes.pop("amin", sc.amin), changes.pop("amax", sc.amax))
             sc.auto = False
@@ -347,14 +499,18 @@ class PointCloudViewer:
         if sc is None or self.pc is None:
             return
         vals = self._active_values()
-        lo, hi = auto_range(vals, *AUTO_PERCENTILES[self.scale_mode]) if kind == "auto" else full_range(vals)
+        if kind == "auto":
+            rng = symmetric_range if self.scale_mode == "deviation" else auto_range
+            lo, hi = rng(vals, *AUTO_PERCENTILES[self.scale_mode])
+        else:
+            lo, hi = full_range(vals)
         sc.amin, sc.amax, sc.vmin, sc.vmax = lo, hi, lo, hi
         sc.auto = kind == "auto"
         self.recolor()
         self._notify()
 
     def data_range(self):
-        return full_range(self._active_values()) if self.scale and self.pc is not None else (0.0, 1.0)
+        return full_range(self._active_values()) if self.scale is not None else (0.0, 1.0)
 
     def _notify(self):
         if self.on_scale_changed is not None:
@@ -371,12 +527,15 @@ class PointCloudViewer:
             self._upload_sel()
         if self._trash_pos is not None:
             self._upload_trash()
+        for rid in self.refs:
+            self._recolor_ref(rid)
         self.canvas.update()
 
     def set_z_scale(self, z):
         self.z_scale = float(z)
         for m in ([self.markers, self.trash_markers, self.sel_markers, self.sec_lines, self.sec_verts]
-                  + [l.mesh for l in self.surfaces.values()]):
+                  + [l.mesh for l in self.surfaces.values()] + [r["markers"] for r in self.refs.values()]
+                  + list(self.contours.values()) + list(self.contour_labels.values())):
             m.transform = STTransform(scale=(1.0, 1.0, self.z_scale))
         for layer in self.surfaces.values():
             layer.update_shade(self.z_scale, self._ensure_elev_scale())
@@ -390,11 +549,98 @@ class PointCloudViewer:
     @property
     def overlay_z(self):
         """Local Z of the drawing plane: just above the top of the data."""
+        if self.bbox is not None and self.origin is not None:
+            return float(self.bbox[1][2] - self.origin[2])
         return float(self.pc.bbox_max[2] - self.pc.offset[2]) if self.pc is not None else 0.0
 
+    # ---------- terrain height (picking + draping of drawn lines) ----------
+    def _invalidate_height(self):
+        self._hgrid = None
+
+    def _height_grid(self):
+        """Coarse height map (local coords) of everything shown: points, reference clouds, surfaces."""
+        if self._hgrid is not None:
+            return self._hgrid or None
+        parts = []
+        if self._pos is not None and self.markers.visible and len(self._pos):
+            parts.append(np.asarray(self._pos[::max(1, len(self._pos) // 600_000)], np.float64))
+        for r in self.refs.values():
+            if r["visible"] and len(r["pos"]):
+                parts.append(np.asarray(r["pos"][::max(1, len(r["pos"]) // 300_000)], np.float64))
+        for l in self.surfaces.values():
+            if l.V is not None and l.mesh.visible:
+                parts.append(np.asarray(l.V[::max(1, len(l.V) // 300_000)], np.float64))
+        if not parts:
+            self._hgrid = False
+            return None
+        Pt = np.vstack(parts)
+        lo, hi = Pt[:, :2].min(0), Pt[:, :2].max(0)
+        cell = max(float((hi - lo).max()) / 600.0, 1e-6)
+        nx, ny = int((hi[0] - lo[0]) / cell) + 1, int((hi[1] - lo[1]) / cell) + 1
+        ix = ((Pt[:, 0] - lo[0]) / cell).astype(np.int64)
+        iy = ((Pt[:, 1] - lo[1]) / cell).astype(np.int64)
+        k = iy * nx + ix
+        ssum = np.bincount(k, Pt[:, 2], nx * ny)
+        cnt = np.bincount(k, None, nx * ny)
+        g = np.where(cnt > 0, ssum / np.maximum(cnt, 1), np.nan).reshape(ny, nx)
+        # fill small gaps from the nearest cell (≤ 3 cells: areas outside the data stay empty), then a light
+        # NaN-aware 3×3 smoothing so draped lines do not pick up point noise
+        from scipy import ndimage
+        ok = np.isfinite(g)
+        if ok.any() and not ok.all():
+            d, (iy2, ix2) = ndimage.distance_transform_edt(~ok, return_indices=True)
+            fill = (~ok) & (d <= 3)
+            g[fill] = g[iy2[fill], ix2[fill]]
+            ok = np.isfinite(g)
+        num = ndimage.uniform_filter(np.where(ok, g, 0.0), 3)
+        den = ndimage.uniform_filter(ok.astype(float), 3)
+        g = np.where(ok, num / np.maximum(den, 1e-9), np.nan)
+        self._hgrid = (lo, cell, g)
+        return self._hgrid
+
+    def _ground_local(self, x, y):
+        """Height (local z) at local XY, NaN where nothing is displayed."""
+        hg = self._height_grid()
+        x, y = np.asarray(x, float), np.asarray(y, float)
+        if hg is None:
+            return np.full(np.shape(x), np.nan)
+        lo, cell, g = hg
+        ix = np.floor((x - lo[0]) / cell).astype(np.int64)
+        iy = np.floor((y - lo[1]) / cell).astype(np.int64)
+        ok = (ix >= 0) & (iy >= 0) & (ix < g.shape[1]) & (iy < g.shape[0])
+        out = np.full(np.shape(x), np.nan)
+        out[ok] = g[iy[ok], ix[ok]]
+        return out
+
+    def _fallback_z(self):
+        """Plane used where nothing is displayed: middle of the data (same as screen_to_xy)."""
+        hg = self._height_grid()
+        return float(np.nanmedian(hg[2])) if hg is not None else self.overlay_z
+
+    def _drape_z(self, x, y):
+        """Overlay height: on the displayed terrain, else the fallback plane."""
+        z = self._ground_local(x, y)
+        return np.where(np.isfinite(z), z, self._fallback_z())
+
+    def _drape_pairs(self, pairs_world):
+        """Segment pairs (world XY, flat list a,b,a,b…) → densified local XYZ pairs following the terrain."""
+        P = np.asarray(pairs_world, float).reshape(-1, 2, 2) - self.origin[:2]
+        hg = self._height_grid()
+        step = hg[1] if hg is not None else None
+        out = []
+        for a, b in P:
+            n = 1 if step is None else int(min(max(np.hypot(*(b - a)) / step, 1), 400))
+            t = np.linspace(0, 1, n + 1)
+            seg = a + (b - a) * t[:, None]
+            z = self._drape_z(seg[:, 0], seg[:, 1])
+            q = np.column_stack([seg, z])
+            out.append(np.repeat(q, 2, axis=0)[1:-1])
+        return np.vstack(out) if out else np.empty((0, 3))
+
     def screen_to_xy(self, pos):
-        """World XY where the view ray through a canvas position meets the drawing plane."""
-        if self.pc is None:
+        """World XY of the terrain point under a canvas position (ray traced into the displayed data);
+        falls back to a horizontal plane through the middle of the data."""
+        if self.origin is None:
             return None
         tr = self.markers.get_transform("visual", "canvas")
         a = np.asarray(tr.imap([pos[0], pos[1], -0.5, 1.0]), dtype=np.float64)
@@ -402,23 +648,44 @@ class PointCloudViewer:
         a, b = a[:3] / a[3], b[:3] / b[3]
         if abs(b[2] - a[2]) < 1e-12:
             return None
-        t = (self.overlay_z - a[2]) / (b[2] - a[2])
+        hg = self._height_grid()
+        if hg is not None:
+            g = hg[2]
+            zmin, zmax = float(np.nanmin(g)), float(np.nanmax(g))
+            t0, t1 = sorted(((zmax - a[2]) / (b[2] - a[2]), (zmin - a[2]) / (b[2] - a[2])))
+            ts = np.linspace(t0, t1, 2000)
+            Q = a + ts[:, None] * (b - a)
+            h = self._ground_local(Q[:, 0], Q[:, 1])
+            f = Q[:, 2] - h                                  # > 0 above the terrain
+            hit = np.flatnonzero(np.isfinite(f) & (f <= 0))
+            if len(hit):
+                i = hit[0]
+                if i > 0 and np.isfinite(f[i - 1]) and f[i - 1] > 0:
+                    w = f[i - 1] / (f[i - 1] - f[i])
+                    q = Q[i - 1] + w * (Q[i] - Q[i - 1])
+                else:
+                    q = Q[i]
+                return np.array([q[0] + self.origin[0], q[1] + self.origin[1]])
+            zp = self._fallback_z()
+        else:
+            zp = self.overlay_z
+        t = (zp - a[2]) / (b[2] - a[2])
         q = a + t * (b - a)
-        return np.array([q[0] + self.pc.offset[0], q[1] + self.pc.offset[1]])
+        return np.array([q[0] + self.origin[0], q[1] + self.origin[1]])
 
     def xy_to_screen(self, xy):
         xy = np.atleast_2d(xy)
         tr = self.markers.get_transform("visual", "canvas")
-        pts = np.column_stack([xy[:, 0] - self.pc.offset[0], xy[:, 1] - self.pc.offset[1],
-                               np.full(len(xy), self.overlay_z)])
+        lx, ly = xy[:, 0] - self.origin[0], xy[:, 1] - self.origin[1]
+        pts = np.column_stack([lx, ly, self._drape_z(lx, ly)])
         m = np.asarray(tr.map(pts))
         return m[:, :2] / m[:, 3:4]
 
     def set_section_overlay(self, sections, active, draft=None, cursor=None):
         """sections: list of (xy, width). Active one drawn with its corridor; draft = in-progress line."""
-        if self.pc is None:
+        if self.origin is None:
             return
-        off = self.pc.offset[:2]
+        off = self.origin[:2]
         z = self.overlay_z
         pos, col, verts = [], [], []
 
@@ -444,15 +711,20 @@ class PointCloudViewer:
             add_poly(line, (0.30, 0.55, 1.0, 1.0))
             verts.extend(draft)
         if pos:
-            P = np.asarray(pos, dtype=np.float64)
-            P3 = np.column_stack([P[:, 0] - off[0], P[:, 1] - off[1], np.full(len(P), z)]).astype(np.float32)
-            self.sec_lines.set_data(pos=P3, color=np.asarray(col, np.float32), connect="segments")
+            P3, C3 = [], []
+            for k in range(0, len(pos), 2):
+                seg = self._drape_pairs([pos[k], pos[k + 1]])
+                P3.append(seg)
+                C3.append(np.tile(col[k], (len(seg), 1)))
+            self.sec_lines.set_data(pos=np.vstack(P3).astype(np.float32), color=np.vstack(C3).astype(np.float32),
+                                    connect="segments")
             self.sec_lines.visible = True
         else:
             self.sec_lines.visible = False
         if verts:
             V = np.asarray(verts, dtype=np.float64)
-            V3 = np.column_stack([V[:, 0] - off[0], V[:, 1] - off[1], np.full(len(V), z)]).astype(np.float32)
+            vx, vy = V[:, 0] - off[0], V[:, 1] - off[1]
+            V3 = np.column_stack([vx, vy, self._drape_z(vx, vy)]).astype(np.float32)
             self.sec_verts.set_data(V3, face_color=(1, 1, 1, 1), edge_color=(1.0, 0.62, 0.26, 1),
                                     edge_width=2, size=9)
             self.sec_verts.visible = True
@@ -460,12 +732,176 @@ class PointCloudViewer:
             self.sec_verts.visible = False
         self.canvas.update()
 
+    # ---------- contour layers ----------
+    def set_contours(self, cid, cs, depth=False):
+        old = self.contours.pop(cid, None)
+        if old is not None:
+            old.parent = None
+        oldt = self.contour_labels.pop(cid, None)
+        if oldt is not None:
+            oldt.parent = None
+        if cs is None or self.origin is None or not cs.lines:
+            self.canvas.update()
+            return
+        pos, col = [], []
+        for ln, mj in zip(cs.lines, cs.major):
+            p = ln - self.origin
+            pos.append(np.repeat(p, 2, axis=0)[1:-1])                 # segments
+            zero = abs(float(ln[0, 2])) < 1e-9
+            c = (0.30, 0.86, 1.0, 1.0) if zero else ((0.97, 0.97, 0.99, 0.95) if mj else (0.62, 0.66, 0.72, 0.75))
+            col.append(np.tile(c, (2 * (len(p) - 1), 1)))
+        line = scene.visuals.Line(pos=np.vstack(pos).astype(np.float32), color=np.vstack(col).astype(np.float32),
+                                  connect="segments", method="gl", width=1.5, parent=self.view.scene)
+        # contours lie exactly on the seabed: drawn as an overlay so points / surfaces never hide them
+        line.set_gl_state("translucent", depth_test=False)
+        line.order = 6
+        line.transform = STTransform(scale=(1.0, 1.0, self.z_scale))
+        self.contours[cid] = line
+        # value labels: major contours (all contours if there are no majors)
+        from fileio.contour_io import label_positions
+        lo, hi = cs.bbox()
+        spacing = max(float(max(hi[0] - lo[0], hi[1] - lo[1])) / 3.0, 1.0)
+        import math
+        dec = 0 if cs.interval >= 1 else min(3, max(1, -math.floor(math.log10(cs.interval) + 1e-9) +
+                                                   (0 if round(cs.interval * 10 ** -math.floor(math.log10(cs.interval)), 6)
+                                                    in (1.0, 2.0, 5.0) else 1)))
+        use_major = bool(cs.major.any())
+        texts, pts = [], []
+        for ln, mj in zip(cs.lines, cs.major):
+            if use_major and not mj:
+                continue
+            z = float(ln[0, 2])
+            for x, y, _ang in label_positions(ln, spacing, spacing * 0.3):
+                texts.append(f"{(-z if depth else z):.{dec}f}")
+                pts.append((x - self.origin[0], y - self.origin[1], z - self.origin[2]))
+                if len(texts) >= 400:
+                    break
+        if texts:
+            t = scene.visuals.Text(text=texts, pos=np.asarray(pts, np.float32), color=(1.0, 0.86, 0.35, 1.0),
+                                   font_size=8, anchor_x="center", anchor_y="center", parent=self.view.scene)
+            t.set_gl_state("translucent", depth_test=False)
+            t.order = 7
+            t.transform = STTransform(scale=(1.0, 1.0, self.z_scale))
+            self.contour_labels[cid] = t
+        self.canvas.update()
+
+    def set_contours_visible(self, cid, on):
+        for d in (self.contours, self.contour_labels):
+            if cid in d:
+                d[cid].visible = bool(on)
+        self.canvas.update()
+
+    # ---------- region polygon (volumes) ----------
+    def set_region(self, poly):
+        if not hasattr(self, "region_lines"):
+            self.region_lines = scene.visuals.Line(parent=self.view.scene, method="gl", width=2.0)
+            self.region_lines.set_gl_state("translucent", depth_test=False)
+            self.region_lines.order = 5
+        if poly is None or self.origin is None or len(poly) < 3:
+            self.region_lines.visible = False
+            self.canvas.update()
+            return
+        P = np.asarray(poly, float)
+        P = np.vstack([P, P[:1]])
+        pairs = np.repeat(P, 2, axis=0)[1:-1]
+        self.region_lines.set_data(pos=self._drape_pairs(pairs).astype(np.float32), color=(1.0, 0.82, 0.40, 1.0),
+                                   connect="segments")
+        self.region_lines.transform = STTransform(scale=(1.0, 1.0, self.z_scale))
+        self.region_lines.visible = True
+        self.canvas.update()
+
+    # ---------- routes ----------
+    def set_routes(self, routes):
+        """routes: list of Route objects (visible ones). Cyan polylines + KP labels at round values."""
+        from render.colormap import nice_ticks
+        if self.origin is None or not routes:
+            self.route_lines.visible = self.route_text.visible = False
+            self.canvas.update()
+            return
+        off = self.origin[:2]
+        z = self.overlay_z
+        pos, labels, lpos = [], [], []
+        for r in routes:
+            for a, b in zip(r.xy[:-1], r.xy[1:]):
+                pos.extend([a, b])
+            k0, k1 = r.kp_range()
+            ticks, dec = nice_ticks(k0, k1, target=8)
+            for k in ticks:
+                p = r.xy_at(r.chainage_at_kp(k))
+                from core.route import dist_label
+                labels.append(f"{dist_label()} {k:.{max(dec, 1)}f}")
+                lpos.append(p)
+            labels.append(r.name)
+            lpos.append(r.xy[0])
+        tr = STTransform(scale=(1.0, 1.0, self.z_scale))
+        self.route_lines.set_data(pos=self._drape_pairs(pos).astype(np.float32), color=(0.30, 0.79, 0.94, 1.0),
+                                  connect="segments")
+        self.route_lines.transform = tr
+        self.route_lines.visible = True
+        L = np.asarray(lpos, float)
+        self.route_text.text = labels
+        lx, ly = L[:, 0] - off[0], L[:, 1] - off[1]
+        self.route_text.pos = np.column_stack([lx, ly, self._drape_z(lx, ly)]).astype(np.float32)
+        self.route_text.transform = tr
+        self.route_text.visible = True
+        self.canvas.update()
+
+    # ---------- subset boxes ----------
+    def set_subset_overlay(self, current=None, draft=None, done=()):
+        """current / draft: 4×2 corner arrays (world XY); done: list of corner arrays (shaded green)."""
+        if self.origin is None:
+            return
+        off = self.origin[:2]
+        z = self.overlay_z
+        pos, col = [], []
+
+        def outline(c, color):
+            for k in range(4):
+                pos.extend([c[k], c[(k + 1) % 4]])
+                col.extend([color, color])
+
+        for c in done:
+            outline(c, (0.24, 0.81, 0.56, 0.9))
+        if current is not None:
+            outline(current, (1.0, 0.62, 0.26, 1.0))
+        if draft is not None:
+            outline(draft, (0.30, 0.55, 1.0, 1.0))
+        tr = STTransform(scale=(1.0, 1.0, self.z_scale))
+        if pos:
+            P3, C3 = [], []
+            for k in range(0, len(pos), 2):
+                seg = self._drape_pairs([pos[k], pos[k + 1]])
+                P3.append(seg)
+                C3.append(np.tile(col[k], (len(seg), 1)))
+            self.sub_lines.set_data(pos=np.vstack(P3).astype(np.float32), color=np.vstack(C3).astype(np.float32),
+                                    connect="segments")
+            self.sub_lines.transform = tr
+            self.sub_lines.visible = True
+        else:
+            self.sub_lines.visible = False
+        if done:
+            V = np.vstack([np.column_stack([c[:, 0] - off[0], c[:, 1] - off[1],
+                                            self._drape_z(c[:, 0] - off[0], c[:, 1] - off[1])]) for c in done])
+            F = np.vstack([[4 * k, 4 * k + 1, 4 * k + 2] for k in range(len(done))]
+                          + [[4 * k, 4 * k + 2, 4 * k + 3] for k in range(len(done))])
+            self.sub_fill.set_data(vertices=V.astype(np.float32), faces=F.astype(np.int32),
+                                   color=(0.24, 0.81, 0.56, 0.16))
+            self.sub_fill.transform = tr
+            self.sub_fill.visible = True
+        else:
+            self.sub_fill.visible = False
+        self.canvas.update()
+
     # ---------- camera ----------
     def fit_view(self):
-        if self.pc is None:
+        if self.origin is None:
             return
-        lo = self.pc.bbox_min - self.pc.offset
-        hi = self.pc.bbox_max - self.pc.offset
+        if self.bbox is not None:
+            lo, hi = self.bbox[0] - self.origin, self.bbox[1] - self.origin
+        elif self.pc is not None:
+            lo, hi = self.pc.bbox_min - self.origin, self.pc.bbox_max - self.origin
+        else:
+            return
         center = (lo + hi) / 2.0
         ext = hi - lo
         center[2] *= self.z_scale

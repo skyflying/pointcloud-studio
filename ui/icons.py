@@ -29,6 +29,8 @@ _ICONS = {
     "restore": '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
     "export": '<path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19.5h14"/>',
     "section": '<path d="M3.5 18.5l5.5-9 5 4.5 6.5-9.5"/><circle cx="3.5" cy="18.5" r="1.6" fill="{a}" stroke="{a}"/><circle cx="9" cy="9.5" r="1.6" fill="{a}" stroke="{a}"/><circle cx="14" cy="14" r="1.6" fill="{a}" stroke="{a}"/><circle cx="20.5" cy="4.5" r="1.6" fill="{a}" stroke="{a}"/>',
+    "subset": '<path d="M3.5 9.5l11-6 6 11-11 6z"/><circle cx="9" cy="12.5" r="1.1" fill="{a}" stroke="{a}"/><circle cx="12.5" cy="10" r="1.1" fill="{a}" stroke="{a}"/><circle cx="14" cy="14" r="1.1" fill="{a}" stroke="{a}"/>',
+    "add": '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 10v6M9 13h6"/>',
     "fit": '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
 }
 

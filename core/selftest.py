@@ -119,6 +119,158 @@ def run(app=None):
         assert len(r["idx"]) > 0 and len(r["tin"][0]) > 0
         return f"{len(r['idx']):,} corridor points"
 
+    def class7_reject():
+        import laspy
+
+        from core.trash import ClassifyCommand
+        from fileio.writers import export
+        pc = ctx["pc"]
+        idx = np.arange(0, 600)
+        cmd = ClassifyCommand(pc, idx, 7)
+        cmd.do()
+        assert pc.n_noise == 600
+        p = os.path.join(tmp, "c7.laz")
+        export(pc, np.flatnonzero(pc.deleted_batch == 0), p, "laz", {})
+        n7 = int((np.array(laspy.read(p).classification) == 7).sum())
+        cmd.undo()
+        assert n7 == 600 and pc.n_noise == 0
+        return "600 points → Class 7 → LAZ → read back"
+
+    def auto_filter():
+        from core import filters
+        pc = ctx["pc"]
+        z = pc.xyz[:, 2].copy()
+        spikes = np.arange(0, len(pc), 997)[:40]
+        pc.xyz[spikes, 2] += 1.5
+        try:
+            cand, _ = filters.run(pc.xyz, pc.active_indices(), "grid", dict(cell=2.0, mode="abs", value=0.3))
+            cand2, _ = filters.run(pc.xyz, pc.active_indices(), "sor", dict(k=8, n_std=3.0))
+        finally:
+            pc.xyz[:, 2] = z
+        found = len(set(cand.tolist()) & set(spikes.tolist()))
+        assert found == len(spikes) and len(cand) == len(spikes), f"grid filter found {found}/{len(spikes)} (+{len(cand) - found})"
+        return f"grid median: {found}/{len(spikes)} spikes, 0 false · SOR ran ({len(cand2)} cand.)"
+
+    def routes():
+        import shapefile
+
+        from core import crs as crsmod
+        from fileio.route_reader import read_route_table, read_shp, reproject_routes
+        xy = np.array([[160020.0, 2620040.0], [160250.0, 2620120.0], [160420.0, 2620200.0]])
+        x2, y2 = crsmod.transform_xy(xy[:, 0], xy[:, 1], crsmod.from_epsg(3826), crsmod.from_epsg(32651))
+        base = os.path.join(tmp, "r")
+        w = shapefile.Writer(base, shapeType=shapefile.POLYLINE)
+        w.field("NAME", "C")
+        w.line([list(map(list, zip(x2, y2)))])
+        w.record("T-01")
+        w.close()
+        with open(base + ".prj", "w") as f:
+            f.write(crsmod.from_epsg(32651).to_wkt("WKT1_ESRI"))
+        rs, c, _ = read_shp(base + ".shp")
+        reproject_routes(rs, c, crsmod.from_epsg(3826))
+        err = float(np.abs(rs[0].xy - xy).max())
+        p = os.path.join(tmp, "r.csv")
+        kp = 5 + np.r_[0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))] / 1000
+        with open(p, "w") as f:
+            f.write("KP,E,N\n" + "".join(f"{k:.4f},{a:.3f},{b:.3f}\n" for k, (a, b) in zip(kp, xy)))
+        rc, _ = read_route_table(p, 1, "comma", ["KP", "Easting (X)", "Northing (Y)"])
+        assert err < 0.01 and abs(rc[0].kp_at(100.0) - 5.1) < 1e-3, f"route error {err}"
+        return f"SHP + .prj (UTM51N → TWD97, {err * 1000:.1f} mm) · RPL CSV with KP"
+
+    def volumes():
+        from core.surface import Dem
+        from core.volume import compare
+        cell, nr, nc = 0.5, 160, 160
+        xs = (np.arange(nc) + 0.5) * cell
+        X, Y = np.meshgrid(xs, 80 - (np.arange(nr) + 0.5) * cell)
+        base = -20 + 0.01 * X
+        mound = 1.5 * np.exp(-((X - 40) ** 2 + (Y - 40) ** 2) / (2 * 6.0 ** 2))
+        r = compare(Dem((base + mound).astype(np.float32), 0, 80, cell, "a"), Dem(base.astype(np.float32), 0, 80, cell, "b"))
+        exact = 1.5 * 2 * np.pi * 36
+        err = abs(r["stats"]["fill_volume"] - exact) / exact
+        assert err < 0.005, f"volume error {err:.2%}"
+        return f"berm {r['stats']['fill_volume']:.2f} m³ (exact {exact:.2f})"
+
+    def earthworks():
+        from core.design import dredge_design, slope_map, trench_design
+        from core.surface import Dem
+        cell, n = 0.25, 800
+        X, _ = np.meshgrid((np.arange(n) + 0.5) * cell, 200 - (np.arange(n) + 0.5) * cell)
+        flat = Dem(np.full((n, n), -10.0, np.float32), 0, 200, cell, "f")
+        r = dredge_design(flat, ("polygon", [(80, 90), (120, 90), (120, 110), (80, 110)]), -14.0, "cut", cut_n=3.0)
+        exact = 40 * 20 * 4 + 60 * 3 * 16 + np.pi * 9 * 64 / 3
+        e1 = abs(r["stats"]["cut_volume"] - exact) / exact
+        t = trench_design(flat, np.array([(20.0, 100.0), (180.0, 100.0)]), np.array([1.0, 1.16]), bottom_width=1.0,
+                          slope_n=2.0, depth=2.0, smooth=10, kp_step=0.05)
+        e2 = abs(t["stats"]["cut_volume"] - 10 * 160) / 1600
+        sm = slope_map(Dem((-10 + 0.1 * X).astype(np.float32), 0, 200, cell, "s"))
+        e3 = abs(sm["stats"]["mean"] - np.degrees(np.arctan(0.1)))
+        assert e1 < 0.005 and e2 < 0.005 and e3 < 0.01, f"dredge {e1:.2%} trench {e2:.2%} slope {e3:.3f}°"
+        return f"dredge pit {e1:.2%}, trench {e2:.2%}, slope {e3:.3f}° error"
+
+    def contours():
+        import shapefile
+
+        from core.contours import make_contours
+        from core.surface import Dem
+        from fileio.contour_io import export_contours
+        cell, n = 0.5, 300
+        X, Y = np.meshgrid((np.arange(n) + 0.5) * cell, 150 - (np.arange(n) + 0.5) * cell)
+        cs = make_contours(Dem((-np.hypot(X - 75, Y - 75)).astype(np.float32), 0, 150, cell, "c"), 10)
+        err = max(float(np.abs(np.hypot(l[:, 0] - 75, l[:, 1] - 75) + lev).max()) for l, lev in zip(cs.lines, cs.levels))
+        export_contours(cs, os.path.join(tmp, "c.shp"))
+        export_contours(cs, os.path.join(tmp, "c.dxf"))
+        n_shp = len(shapefile.Reader(os.path.join(tmp, "c.shp")))
+        dxf = open(os.path.join(tmp, "c.dxf")).read()
+        n_dxf, n_txt = dxf.count("\nPOLYLINE\n"), dxf.count("\nTEXT\n")
+        assert err < 0.01 and n_shp == n_dxf == len(cs.lines) and n_txt > 0, \
+            f"contour err {err}, shp {n_shp}, dxf {n_dxf}, labels {n_txt}"
+        return f"{len(cs.lines)} rings (radius err {err * 1000:.1f} mm) → SHP + DXF 3D with {n_txt} depth labels"
+
+    def land_classification():
+        from core import classify as C
+        rng = np.random.default_rng(3)
+        gx, gy = rng.uniform(0, 120, 40000), rng.uniform(0, 120, 40000)
+        terr = lambda x, y: 15 + 0.05 * x + 2 * np.sin(y / 20)                      # noqa: E731
+        bx, by = rng.uniform(40, 70, 2500), rng.uniform(40, 60, 2500)                # flat roof +8 m
+        tx, ty = rng.normal(95, 3, 3000), rng.normal(95, 3, 3000)                    # tree canopy
+        out = ~((gx > 40) & (gx < 70) & (gy > 40) & (gy < 60))
+        xyz = np.vstack([np.column_stack([gx[out], gy[out], terr(gx[out], gy[out])]),
+                         np.column_stack([bx, by, terr(bx, by) + 8]),
+                         np.column_stack([tx, ty, terr(tx, ty) + rng.uniform(3, 12, 3000)])])
+        truth = np.r_[np.full(out.sum(), 2), np.full(2500, 6), np.full(3000, 5)]
+        g, cls = C.classify(xyz, np.arange(len(xyz)), "smrf", dict(cell=1.0), veg=(0.5, 2, 5),
+                            buildings=dict(min_height=2.5, roughness=0.02, min_area=25, cell=1.0))
+        err = float(((truth == 2) != g).mean())
+        b_ok = float(((truth == 6) & (cls == 6)).sum() / 2500)
+        assert err < 0.02 and b_ok > 0.8, f"ground error {err:.2%}, building recall {b_ok:.0%}"
+        return f"SMRF ground error {err:.2%}, roof recall {b_ok:.0%} (land data)"
+
+    def crs_and_reprojection():
+        from core import crs as crsmod
+        from fileio.grid_reader import reproject_dem
+        hits = crsmod.search("TWD97 121")
+        assert any(c == 3826 for c, _, _ in hits), "EPSG database search failed"
+        x, y = crsmod.transform_xy([160500.0], [2620150.0], crsmod.from_epsg(3826), crsmod.from_epsg(4326))
+        assert abs(x[0] - 120.12) < 0.01 and abs(y[0] - 23.68) < 0.01, "TWD97 → WGS84 wrong"
+        r = reproject_dem(ctx["dem"], crsmod.from_epsg(3826), crsmod.from_epsg(32651))
+        assert np.isfinite(r.z).mean() > 0.5
+        return f"EPSG search, TWD97→WGS84, DEM → UTM 51N {r.z.shape}"
+
+    def project_roundtrip():
+        from core import project_io
+        from core.project import Dataset, Project
+        pr = Project()
+        pr.crs = None
+        ds = pr.add(Dataset("t", "points", ctx["pc"]))
+        pr.add(Dataset("d", "grid", ctx["dem"], derived_from=ds.id))
+        path = os.path.join(tmp, "t.pcsproj")
+        project_io.save_project(path, pr)
+        doc = project_io.read_project(path)
+        g = project_io.load_generated(doc["datasets"][1], path)
+        assert g.z.shape == ctx["dem"].z.shape
+        return f"{len(doc['datasets'])} datasets saved / read"
+
     def render():
         from PySide6.QtWidgets import QApplication
 
@@ -128,26 +280,35 @@ def run(app=None):
         w.resize(900, 600)
         w.show()
         app_.processEvents()
-        pc = ctx["pc"]
-        w.pc = pc
-        from core.selection import Selection
-        from core.trash import Trash
-        w.sel, w.trash = Selection(len(pc)), Trash(pc)
-        w.viewer.set_pointcloud(pc)
-        w.stack.setCurrentIndex(1)
-        w.viewer.set_surface("dem", ctx["dem"])
+        from core.project import Dataset
+        w._new_project()
+        w.project.add(Dataset("selftest cloud", "points", ctx["pc"]))
+        w.project.add(Dataset("selftest DEM", "grid", ctx["dem"]))
+        w._project_changed(fit=True)
+        import time as _t
+        t_end = _t.perf_counter() + 1.0          # let Qt lay out / resize the newly shown 3D view
+        while _t.perf_counter() < t_end:
+            app_.processEvents()
+            _t.sleep(0.02)
+        w.viewer.fit_view()
         app_.processEvents()
         img = w.viewer.canvas.render()
         cover = float((img[..., :3].astype(int).sum(-1) > 80).mean())
         w._dirty = False
         w.close()
-        assert cover > 0.01, "nothing rendered"
+        v = w.viewer
+        assert cover > 0.01, (f"nothing rendered (canvas {v.canvas.size}, stack {w.stack.currentIndex()}, "
+                              f"bound={w.pc is not None}, markers={v.markers.visible}, shown={len(v.display_idx)}, "
+                              f"camera={tuple(round(c, 1) for c in v.camera.center)}/{v.camera.scale_factor:.1f}, "
+                              f"surfaces={[(k, l.V is not None) for k, l in v.surfaces.items()]})")
         return f"OpenGL render ok, coverage {cover:.2f}"
 
     for name, fn in (("generate LAZ (laspy + lazrs)", make_data), ("read LAZ", read_laz),
                      ("text export / import", text_roundtrip), ("TIN (Delaunay)", tin), ("DEM (TIN, shoal)", dem),
                      ("GeoTIFF with CRS", geotiff), ("LandXML", landxml), ("LAS export", las_with_crs),
-                     ("cross-section", section), ("3D render (VisPy/OpenGL)", render)):
+                     ("cross-section", section), ("reject as Class 7", class7_reject), ("auto filter", auto_filter), ("routes (SHP / RPL)", routes), ("volumes", volumes), ("land classification", land_classification), ("earthworks design", earthworks), ("contours (SHP / DXF)", contours),
+                     ("CRS search / reprojection", crs_and_reprojection),
+                     ("project save / open", project_roundtrip), ("3D render (VisPy/OpenGL)", render)):
         step(name, fn)
 
     lines += ["", "RESULT: " + ("ALL PASSED" if ok_all else "FAILED")]

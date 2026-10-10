@@ -40,6 +40,9 @@ class ProfilePlot(QWidget):
         self._cursor = None
         self._drag = None
         self.point_size = 2
+        self.xlabel = "Chainage (m)"
+        self.xfmt = None                 # callable(value_m) → tick label (KP in km for routes)
+        self.layers = []                 # multi-epoch: [{name, color, kind 'line'|'points', ch, z}]
 
     # ---------- data / view ----------
     def set_data(self, ch, z, colors, tin, dem, fit=False):
@@ -55,8 +58,11 @@ class ProfilePlot(QWidget):
         r = self._plot_rect()
         return (self.x1 - self.x0) * r.height() / r.width() / self.vex
 
+    def _visible_layers(self):
+        return [l for l in self.layers if self.show["tin" if l["kind"] == "line" else "dem"]]
+
     def _all_z(self):
-        parts = []
+        parts = [l["z"][np.isfinite(l["z"])] for l in self._visible_layers()]
         if self.z is not None and len(self.z) and self.show["points"]:
             parts.append(self.z)
         for k in ("tin", "dem"):
@@ -67,6 +73,7 @@ class ProfilePlot(QWidget):
 
     def _all_ch(self):
         parts = [self.ch] if self.ch is not None and len(self.ch) else []
+        parts += [l["ch"][np.isfinite(l["ch"])] for l in self.layers]
         for k in ("tin", "dem"):
             d = getattr(self, k)
             if d is not None and len(d[0]):
@@ -130,7 +137,8 @@ class ProfilePlot(QWidget):
             p.setPen(grid)
             p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
             p.setPen(QColor(C["muted"]))
-            p.drawText(QRectF(x - 50, r.bottom() + 4, 100, 16), Qt.AlignHCenter | Qt.AlignTop, f"{v:,.{xd}f}")
+            lab = self.xfmt(v) if self.xfmt else f"{v:,.{xd}f}"
+            p.drawText(QRectF(x - 50, r.bottom() + 4, 100, 16), Qt.AlignHCenter | Qt.AlignTop, lab)
         for v in yt:
             _, y = self.to_px(0, v)
             p.setPen(grid)
@@ -139,7 +147,7 @@ class ProfilePlot(QWidget):
             p.drawText(QRectF(0, y - 8, ML - 8, 16), Qt.AlignRight | Qt.AlignVCenter, self._zlabel(v, yd))
         p.setPen(QColor(C["muted"]))
         p.drawText(QRectF(r.left(), self.height() - 16, r.width(), 14), Qt.AlignHCenter,
-                   "Chainage (m)")
+                   self.xlabel)
         p.save()
         p.translate(12, r.center().y())
         p.rotate(-90)
@@ -163,6 +171,31 @@ class ProfilePlot(QWidget):
                     buf[yi[ok] + dy, xi[ok] + dx] = argb[ok]
             img = QImage(buf.data, W, H, W * 4, QImage.Format_ARGB32_Premultiplied)
             p.drawImage(QPointF(r.left(), r.top()), img)
+        # multi-epoch layers: other clouds as dots, surfaces as lines (one colour per dataset)
+        p.setRenderHint(QPainter.Antialiasing)
+        for lay in self._visible_layers():
+            x, y = self.to_px(lay["ch"], lay["z"])
+            col = QColor(lay["color"])
+            if lay["kind"] == "points":
+                p.setPen(QPen(col, 2))
+                ok = np.isfinite(x) & np.isfinite(y)
+                from PySide6.QtGui import QPolygonF
+                p.drawPoints(QPolygonF([QPointF(a, b) for a, b in zip(x[ok][:200_000], y[ok][:200_000])]))
+                continue
+            path = QPainterPath()
+            down = False
+            for xx, yy in zip(x, y):
+                if not (math.isfinite(xx) and math.isfinite(yy)):
+                    down = False
+                    continue
+                if down:
+                    path.lineTo(xx, yy)
+                else:
+                    path.moveTo(xx, yy)
+                    down = True
+            p.setPen(QPen(col, 1.8))
+            p.setBrush(Qt.NoBrush)
+            p.drawPath(path)
         # surface lines
         for key, color in (("dem", DEM_COLOR), ("tin", TIN_COLOR)):
             d = getattr(self, key)
@@ -207,6 +240,18 @@ class ProfilePlot(QWidget):
         # legend
         lx = r.right() - 8
         p.setRenderHint(QPainter.Antialiasing)
+        ly = r.top() + 4
+        for lay in self._visible_layers():
+            name = lay["name"] if len(lay["name"]) <= 34 else lay["name"][:32] + "…"
+            p.setPen(QColor(C["text"]))
+            p.drawText(QRectF(lx - 260, ly, 260, 16), Qt.AlignRight | Qt.AlignVCenter, name)
+            fm_w = p.fontMetrics().horizontalAdvance(name)
+            p.setPen(QPen(QColor(lay["color"]), 2 if lay["kind"] == "line" else 4))
+            if lay["kind"] == "line":
+                p.drawLine(QPointF(lx - fm_w - 30, ly + 8), QPointF(lx - fm_w - 10, ly + 8))
+            else:
+                p.drawPoint(QPointF(lx - fm_w - 18, ly + 8))
+            ly += 17
         for key, label, color in (("dem", "DEM", DEM_COLOR), ("tin", "TIN", TIN_COLOR)):
             d = getattr(self, key)
             if d is None or not self.show[key]:
@@ -308,7 +353,8 @@ class ProfilePanel(QWidget):
         bar = QHBoxLayout()
         bar.setSpacing(8)
         self.cmb = QComboBox()
-        self.cmb.setMinimumWidth(130)
+        self.cmb.setMinimumWidth(110)
+        self.cmb.setMaximumWidth(170)
         self.cmb.currentIndexChanged.connect(lambda i: cb.select_section(i))
         self.sp_width = QDoubleSpinBox(minimum=0.01, maximum=1e4, value=1.0, singleStep=0.5, decimals=2)
         self.sp_width.setPrefix("± ")
@@ -325,6 +371,8 @@ class ProfilePanel(QWidget):
         self.sp_vex.setSuffix(" ×")
         self.sp_vex.setToolTip("Vertical exaggeration (Shift + wheel on the plot)")
         self.sp_vex.setKeyboardTracking(False)
+        for sp in (self.sp_width, self.sp_start, self.sp_vex):
+            sp.setMaximumWidth(120)
         self.chk = {}
         for w in (QLabel("Section"), self.cmb, QLabel("Width"), self.sp_width, QLabel("Start"), self.sp_start):
             if isinstance(w, QLabel):
@@ -348,9 +396,9 @@ class ProfilePanel(QWidget):
         self.btn_measure.setToolTip("Click two points on the profile")
         self.btn_fit = QPushButton("Fit")
         self.btn_csv = QPushButton("CSV")
-        self.btn_csv.setIcon(icon("export"))
+        self.btn_csv.setToolTip("Export the profile data (CSV)")
         self.btn_png = QPushButton("PNG")
-        self.btn_png.setIcon(icon("export"))
+        self.btn_png.setToolTip("Save the profile image (PNG)")
         self.btn_del = QToolButton()
         self.btn_del.setIcon(icon("trash", "#ff6b6b"))
         self.btn_del.setToolTip("Delete this section")
@@ -393,20 +441,29 @@ class ProfilePanel(QWidget):
         self.cmb.setCurrentIndex(current)
         self.cmb.blockSignals(False)
 
-    def show_section(self, sec, colors, depth, fit):
+    def show_section(self, sec, colors, depth, fit, layers=()):
         self.section = sec
+        self.plot.layers = list(layers)
+        self.chk["tin"].setText("Surfaces")
+        self.chk["dem"].setText("Other clouds")
         for sp, val in ((self.sp_width, sec.width), (self.sp_start, sec.start)):
             sp.blockSignals(True)
             sp.setValue(val)
             sp.blockSignals(False)
         r = sec.result
-        off = sec.start
-        tin = (r["tin"][0] + off, r["tin"][1]) if r.get("tin") is not None else None
-        dem = (r["dem"][0] + off, r["dem"][1]) if r.get("dem") is not None else None
-        self.chk["tin"].setEnabled(tin is not None)
-        self.chk["dem"].setEnabled(dem is not None)
+        tin = (sec.disp(r["tin"][0]), r["tin"][1]) if r.get("tin") is not None else None
+        dem = (sec.disp(r["dem"][0]), r["dem"][1]) if r.get("dem") is not None else None
+        is_kp = sec.kp is not None
+        self.sp_start.setEnabled(not is_kp)
+        self.sp_start.setToolTip("KP comes from the route file" if is_kp else "Chainage at the first vertex (e.g. KP offset)")
+        from core.route import dist_label
+        self.plot.xlabel = f"{dist_label()} (km)" if is_kp else "Chainage (m)"
+        self.plot.xfmt = (lambda v: f"{v / 1000:,.3f}") if is_kp else None
+        kinds = {l["kind"] for l in layers}
+        self.chk["tin"].setEnabled(tin is not None or "line" in kinds)
+        self.chk["dem"].setEnabled(dem is not None or "points" in kinds)
         self.plot.depth = depth
-        self.plot.set_data(r["chainage"] + off, r["z"], colors, tin, dem, fit=fit)
+        self.plot.set_data(sec.disp(r["chainage"]), r["z"], colors, tin, dem, fit=fit)
         if fit:
             self._sync_vex()
         self._readout = (f"{sec.name}: length {sec.length:,.2f} m · {len(r['idx']):,} points within "
@@ -420,7 +477,19 @@ class ProfilePanel(QWidget):
         c, z = pt
         x, y = self.section.xy_at(c)
         zl = f"depth {-z:,.3f}" if self.plot.depth else f"Z {z:,.3f}"
-        self._refresh_label(f"chainage {c:,.2f} m · {zl} m · X {x:,.2f}  Y {y:,.2f}")
+        from core.route import dist_label
+        pos = f"{dist_label()} {c / 1000:,.4f}" if self.section.kp is not None else f"chainage {c:,.2f} m"
+        lines = [l for l in self.plot._visible_layers() if l["kind"] == "line"]
+        if lines:
+            L = lines[0]
+            ok = np.isfinite(L["ch"]) & np.isfinite(L["z"])
+            if ok.sum() >= 2:
+                h = 2.0                                                     # ±2 m along the section
+                z1, z2 = np.interp([c - h, c + h], L["ch"][ok], L["z"][ok], left=np.nan, right=np.nan)
+                if np.isfinite(z1) and np.isfinite(z2):
+                    deg = np.degrees(np.arctan(abs(z2 - z1) / (2 * h)))
+                    pos += f" · slope {deg:.1f}° ({L['name'][:24]})"
+        self._refresh_label(f"{pos} · {zl} m · X {x:,.2f}  Y {y:,.2f}")
 
     def _on_measure(self, m):
         if m is None:

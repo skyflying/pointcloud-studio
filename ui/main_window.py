@@ -20,7 +20,7 @@ from core import profile as prof
 from core.history import History
 from core.surface import DEM_METHODS, build_dem, build_tin, mean_spacing
 from core.selection import Selection, describe
-from core.trash import DeleteCommand, RestoreCommand, Trash
+from core.trash import ClassifyCommand, DeleteCommand, RestoreCommand, Trash
 
 from fileio.las_reader import read_las
 from fileio.surface_io import DEM_FORMATS, TIN_FORMATS, export_dem, export_tin
@@ -33,12 +33,16 @@ from render.picking import pick_point, select_polygon
 from render.viewer import PointCloudViewer
 from ui.icons import icon, point_cloud_pixmap
 from ui.about_dialog import AboutDialog, ShortcutsDialog
+from ui.data_panel import DataCard
+from ui.project_mixin import ALL_FILTER, ProjectFileMixin, ProjectMixin
+from ui.analysis_mixin import AnalysisMixin, ContourMixin, DesignMixin
+from ui.subset_mixin import ClassifyMixin, FilterMixin, RouteMixin, SubsetMixin
 from ui.export_dialog import ExportDialog
 from ui.import_dialog import XyzImportDialog
 from ui.profile_panel import ProfilePanel
 from ui.surface_dialogs import DemDialog, TinDialog
 from ui.theme import dark_titlebar
-from ui.widgets import (Card, ColorScaleCard, FileInfoCard, LayersCard, SelectionCard, TrashCard,
+from ui.widgets import (Card, ColorScaleCard, FileInfoCard, SelectionCard, TrashCard,
                         muted as _muted)
 
 from core.version import APP_NAME, __version__  # noqa: E402
@@ -47,6 +51,7 @@ MODE_HINTS = {
     "pick": "Pick · Click a point · Shift+click add · Ctrl+click remove · Wheel zoom · Middle drag pan · V to rotate",
     "box": "Box select · Drag a rectangle · Shift add · Ctrl subtract · Wheel zoom · Middle drag pan · V to rotate",
     "section": "Section · Click to add vertices · Double-click or Enter to finish · Backspace removes last · Esc cancels · Drag a vertex to edit",
+    "subset": "Subset · Drag the long axis of a subset box in plan view (width in the Subset panel) · Esc cancels",
     "lasso": "Lasso select · Draw a freehand outline · Shift add · Ctrl subtract · Wheel zoom · Middle drag pan · V to rotate",
 }
 XYZ_EXT = (".xyz", ".asc", ".txt", ".csv", ".pts")
@@ -106,7 +111,7 @@ class EmptyState(QWidget):
 
 
 # ---------------------------------------------------------------- main window
-class MainWindow(QMainWindow):
+class MainWindow(ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteMixin, FilterMixin, SubsetMixin, ProjectFileMixin, ProjectMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
@@ -121,9 +126,12 @@ class MainWindow(QMainWindow):
         self.history = History()
         self._sel_methods = []
         self._dirty = False
-        self.tin = None
-        self.dem = None
-        self._edit_version = 0
+        self._init_project_state()
+        self._init_subset_state()
+        self.filter_dialog = None
+        self._init_analysis_state()
+        self.region_visible = self.subset_visible = self.reviewed_visible = True
+        self._filter_saved = None
         self.sections = []
         self.active_section = -1
         self.viewer = PointCloudViewer()
@@ -136,8 +144,11 @@ class MainWindow(QMainWindow):
         self.selector.on_section_draft = self._on_section_draft
         self.selector.on_section_finish = self._on_section_finish
         self.selector.get_section_vertices = (
-            lambda: self.sections[self.active_section].xy if self.active_section >= 0 else None)
+            lambda: (self.sections[self.active_section].xy
+                     if self.active_section >= 0 and self.sections[self.active_section].kp is None else None))
         self.selector.on_vertex_moved = self._on_vertex_moved
+        self.selector.on_subset_draft = self._on_subset_draft
+        self.selector.on_subset_finish = self._on_subset_finish
         self.stack = QStackedWidget()
         self.stack.addWidget(EmptyState(self.open_file))
         self.stack.addWidget(self.viewer.widget)
@@ -158,6 +169,12 @@ class MainWindow(QMainWindow):
     def _build_actions(self):
         self.act_open = QAction(icon("open"), "Open", self, shortcut=QKeySequence.Open,
                                 triggered=self.open_file, toolTip="Open point cloud (Ctrl+O)")
+        self.act_add = QAction(icon("add"), "Add Data…", self, shortcut="Ctrl+Shift+O",
+                               triggered=self.add_data, toolTip="Add point clouds or DEM grids to the project")
+        self.act_route = QAction(icon("section"), "Import Route…", self, shortcut="Ctrl+R", triggered=self.import_route,
+                                 toolTip="Import a cable route (RPL CSV / TXT or Shapefile)")
+        self.act_save = QAction("Save Project", self, shortcut=QKeySequence.Save, triggered=self.save_project)
+        self.act_save_as = QAction("Save Project As…", self, shortcut="Ctrl+Shift+S", triggered=self.save_project_as)
         self.act_export = QAction(icon("export"), "Export…", self, shortcut="Ctrl+E",
                                   triggered=self.export_file, toolTip="Export point cloud (Ctrl+E)")
         self.act_quit = QAction("Exit", self, shortcut=QKeySequence.Quit, triggered=self.close)
@@ -176,7 +193,8 @@ class MainWindow(QMainWindow):
                                     ("pick", "Pick", "P", "Select a single point"),
                                     ("box", "Box", "B", "Rectangle selection"),
                                     ("lasso", "Lasso", "L", "Freehand selection"),
-                                    ("section", "Section", "S", "Draw a cross-section line")):
+                                    ("section", "Section", "S", "Draw a cross-section line"),
+                                    ("subset", "Subset", "U", "Subset editor: drag a box, edit side views, page along")):
             a = QAction(icon(key), label, self, shortcut=sc, checkable=True,
                         toolTip=f"{label} ({sc}) — {tip}")
             a.triggered.connect(lambda _=False, k=key: self.set_mode(k))
@@ -191,8 +209,9 @@ class MainWindow(QMainWindow):
         self.act_clear = QAction("Clear Selection", self, shortcut="Esc",
                                  triggered=self._on_escape)
 
-        self.act_delete = QAction(icon("trash", "#ff6b6b"), "Delete", self, triggered=self.delete_selected,
-                                  toolTip="Move selected points to the trash (Delete)")
+        self.act_delete = QAction(icon("trash", "#ff6b6b"), "Reject", self, triggered=self.reject_selected,
+                                  toolTip="Reject the selected points (Delete) — LAS: reject class (7 / 18 / …) or Trash, "
+                                          "set in the Subset editor; other formats: Trash")
         self.act_delete.setShortcuts([QKeySequence.Delete, QKeySequence("Backspace")])
         self.act_undo = QAction(icon("undo"), "Undo", self, shortcut=QKeySequence.Undo,
                                 triggered=self.undo)
@@ -201,10 +220,26 @@ class MainWindow(QMainWindow):
         self.act_restore_all = QAction(icon("restore"), "Restore All from Trash", self,
                                        triggered=self.restore_all)
         self.act_empty = QAction("Empty Trash…", self, triggered=self.empty_trash)
+        self.act_accept = QAction("Accept (restore rejected points)", self, triggered=self.accept_selected)
+        self.act_filter = QAction("Auto Filter…", self, shortcut="Ctrl+F", triggered=lambda: self.open_filter_dialog())
+        self.act_classify = QAction("Classify Points (Ground / Vegetation / Buildings)…", self, shortcut="Ctrl+K",
+                                    triggered=self.open_classify_dialog)
+        self.act_page_next = QAction("Next Subset", self, shortcut="PgDown", triggered=lambda: self.subset_page(1))
+        self.act_page_prev = QAction("Previous Subset", self, shortcut="PgUp", triggered=lambda: self.subset_page(-1))
+        self.act_mark_done = QAction("Mark Subset Complete", self, shortcut="Ctrl+M", triggered=self.subset_mark_done)
+        for a in (self.act_page_next, self.act_page_prev, self.act_mark_done):
+            self.addAction(a)
 
         self.act_finish_sec = QAction("Finish Section", self, triggered=self.selector.finish_section)
         self.act_finish_sec.setShortcuts([QKeySequence("Return"), QKeySequence("Enter")])
         self.addAction(self.act_finish_sec)
+        self.act_volume = QAction("Volume / Difference…", self, shortcut="Ctrl+Shift+V",
+                                  triggered=self.open_volume_dialog)
+        self.act_c2s = QAction("Point Cloud to Surface…", self, triggered=self.compare_points_to_surface)
+        self.act_design = QAction("Earthworks Design (Cut / Fill / Trench)…", self, shortcut="Ctrl+Shift+D",
+                                  triggered=self.open_design_dialog)
+        self.act_slope = QAction("Slope Map…", self, triggered=self.open_slope_map)
+        self.act_contours = QAction("Contours…", self, shortcut="Ctrl+Shift+C", triggered=self.open_contour_dialog)
         self.act_tin = QAction("Create TIN…", self, shortcut="Ctrl+T", triggered=self.create_tin)
         self.act_dem = QAction("Create DEM…", self, shortcut="Ctrl+G", triggered=self.create_dem)
         self.act_exp_tin = QAction(icon("export"), "Export TIN…", self, triggered=self.export_tin)
@@ -212,6 +247,12 @@ class MainWindow(QMainWindow):
 
         m_file = self.menuBar().addMenu("&File")
         m_file.addAction(self.act_open)
+        m_file.addAction(self.act_add)
+        m_file.addAction(self.act_route)
+        m_file.addSeparator()
+        m_file.addAction(self.act_save)
+        m_file.addAction(self.act_save_as)
+        m_file.addSeparator()
         m_file.addAction(self.act_export)
         m_file.addSeparator()
         m_file.addAction(self.act_quit)
@@ -225,6 +266,10 @@ class MainWindow(QMainWindow):
             m_edit.addAction(a)
         m_edit.addSeparator()
         m_edit.addAction(self.act_delete)
+        m_edit.addAction(self.act_accept)
+        m_edit.addSeparator()
+        m_edit.addAction(self.act_filter)
+        m_edit.addAction(self.act_classify)
         m_edit.addSeparator()
         m_edit.addAction(self.act_restore_all)
         m_edit.addAction(self.act_empty)
@@ -237,6 +282,13 @@ class MainWindow(QMainWindow):
             m_surf.addAction(a)
         m_view.addSeparator()
         self._m_view = m_view
+        m_an = self.menuBar().addMenu("&Analysis")
+        m_an.addAction(self.act_volume)
+        m_an.addAction(self.act_c2s)
+        m_an.addSeparator()
+        m_an.addAction(self.act_design)
+        m_an.addAction(self.act_slope)
+        m_an.addAction(self.act_contours)
         m_sel = self.menuBar().addMenu("&Select")
         self._m_sel = m_sel
         for a in self.mode_actions.values():
@@ -256,6 +308,7 @@ class MainWindow(QMainWindow):
         tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.addToolBar(tb)
         tb.addAction(self.act_open)
+        tb.addAction(self.act_add)
         tb.addAction(self.act_export)
         tb.addSeparator()
         for a in self.view_actions.values():
@@ -271,6 +324,8 @@ class MainWindow(QMainWindow):
         tb.addAction(self.act_delete)
         tb.addAction(self.act_undo)
         tb.addAction(self.act_redo)
+        for a in (self.act_add, self.act_export, self.act_undo, self.act_redo):   # compact: icon only
+            tb.widgetForAction(a).setToolButtonStyle(Qt.ToolButtonIconOnly)
 
     def _build_sidebar(self):
         side = QWidget()
@@ -280,15 +335,15 @@ class MainWindow(QMainWindow):
         v.setContentsMargins(12, 12, 12, 12)
         v.setSpacing(12)
 
-        self.sel_card = SelectionCard(self.invert_selection, self.clear_selection, self.delete_selected)
+        self.sel_card = SelectionCard(self.invert_selection, self.clear_selection, self.reject_selected)
         v.addWidget(self.sel_card)
         self.trash_card = TrashCard(self.restore_selected_batches, self.restore_all,
                                     self.empty_trash, self.purge_batches, self._update_trash_view)
         self.trash_card.setVisible(False)
         v.addWidget(self.trash_card)
-        self.layers_card = LayersCard(self)
-        self.layers_card.setVisible(False)
-        v.addWidget(self.layers_card)
+        self.data_card = DataCard(self)
+        self.data_card.setVisible(False)
+        v.addWidget(self.data_card)
 
         # display card
         disp = Card("Display")
@@ -331,7 +386,8 @@ class MainWindow(QMainWindow):
         self.scale_card = ColorScaleCard(self)
         self.scale_card.setVisible(False)
 
-        nav = Card("Navigation")
+        nav = Card("Navigation", closable=True, on_close=lambda: self.act_nav.setChecked(False))
+        self.nav_card = nav
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(6)
@@ -340,7 +396,8 @@ class MainWindow(QMainWindow):
                                     ("F", "Fit to extent"), ("V · P · B · L", "Navigate · Pick · Box · Lasso"),
                                     ("Shift / Ctrl", "Add / subtract selection"),
                                     ("Ctrl+A · Ctrl+I · Esc", "All · Invert · Clear"),
-                                    ("Delete", "Move selection to trash"),
+                                    ("Delete", "Reject selection (class / trash)"),
+                                    ("U · PgUp · PgDn", "Subset · previous · next page"),
                                     ("Ctrl+Z · Ctrl+Y", "Undo · Redo"))):
             grid.addWidget(QLabel(k), r, 0)
             grid.addWidget(_muted(d), r, 1)
@@ -373,15 +430,36 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.BottomDockWidgetArea, self.profile_dock)
         self.resizeDocks([self.profile_dock], [300], Qt.Vertical)
         self.profile_dock.hide()
+        self._build_subset_dock()
+        from PySide6.QtCore import QSettings
+        self.act_nav = QAction("Navigation Help", self, checkable=True)
+        self.act_nav.setChecked(QSettings("PointCloudStudio", "PointCloudStudio").value("ui/show_navigation", True, bool))
+        self.act_nav.toggled.connect(self._set_nav_visible)
+        self._m_view.addAction(self.act_nav)
+        from PySide6.QtGui import QActionGroup
+        from core.route import DIST_LABEL
+        m_dist = self._m_view.addMenu("Distance Label")
+        grp = QActionGroup(self)
+        saved = QSettings("PointCloudStudio", "PointCloudStudio").value("ui/dist_label", "KP")
+        DIST_LABEL[0] = saved if saved in ("KP", "Chainage") else "KP"
+        for lab, tip in (("KP", "Kilometre point — cables, pipelines offshore"),
+                         ("Chainage", "Chainage — roads, railways, land pipelines")):
+            a = QAction(lab, self, checkable=True)
+            a.setToolTip(tip)
+            a.setChecked(DIST_LABEL[0] == lab)
+            a.triggered.connect(lambda _=False, l=lab: self._set_dist_label(l))
+            grp.addAction(a)
+            m_dist.addAction(a)
+        self._set_nav_visible(self.act_nav.isChecked())
         act = self.profile_dock.toggleViewAction()
         act.setText("Section Profile Panel")
         self._m_view.addAction(act)
 
     def _build_status(self):
         self.chips = {}
-        for key in ("selected", "trash", "total", "active", "shown"):
+        for key in ("selected", "noise", "trash", "total", "active", "shown"):
             lbl = QLabel()
-            lbl.setObjectName({"selected": "chipAccent", "trash": "chipDanger"}.get(key, "chip"))
+            lbl.setObjectName({"selected": "chipAccent", "trash": "chipDanger", "noise": "chipDanger"}.get(key, "chip"))
             lbl.setVisible(False)
             self.statusBar().addPermanentWidget(lbl)
             self.chips[key] = lbl
@@ -413,38 +491,29 @@ class MainWindow(QMainWindow):
 
     def _update_chips(self):
         if self.pc is None:
+            n = len(self.project.datasets)
+            for k, lbl in self.chips.items():
+                lbl.setVisible(k == "total" and n > 0)
+                if k == "total":
+                    lbl.setText(f"{n} dataset{'s' if n != 1 else ''} · editing locked")
             return
         n_sel = self.sel.count if self.sel is not None else 0
         n_trash = self.trash.total if self.trash is not None else 0
-        vals = {"selected": f"{n_sel:,} selected", "trash": f"{n_trash:,} in trash",
+        n_noise = self.pc.n_noise if self.pc.can_classify else 0
+        vals = {"selected": f"{n_sel:,} selected", "trash": f"{n_trash:,} in trash", "noise": f"{n_noise:,} rejected",
                 "total": f"{len(self.pc):,} pts",
                 "active": f"{self.pc.n_active:,} active",
                 "shown": f"{len(self.viewer.display_idx):,} shown"}
         for k, lbl in self.chips.items():
             lbl.setText(vals[k])
-            lbl.setVisible({"selected": n_sel > 0, "trash": n_trash > 0}.get(k, True))
+            lbl.setVisible({"selected": n_sel > 0, "trash": n_trash > 0, "noise": n_noise > 0}.get(k, True))
 
     # ---------- file loading ----------
-    def open_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open point cloud", "", FILE_FILTER)
-        if path:
-            self.load_path(path)
 
-    def load_path(self, path):
-        if not self._confirm_discard("open another file"):
-            return
-        ext = os.path.splitext(path)[1].lower()
-        if ext in LAS_EXT:
-            self._run_loader(path, read_las, path)
-        elif ext in XYZ_EXT or ext == "":
-            dlg = XyzImportDialog(path, self)
-            if dlg.exec() != QDialog.Accepted:
-                return
-            self._run_loader(path, read_xyz, path, **dlg.settings())
-        else:
-            QMessageBox.warning(self, "Unsupported format", f"Unrecognized file extension: {ext}")
 
     def _run_loader(self, path, fn, *args, **kwargs):
+        """Load as a NEW project (kept for scripts / tests; the UI uses load_path)."""
+        self._pending = dict(path=path, add=False, opts={})
         self._run_task(f"Loading {os.path.basename(path)}…", fn, args, kwargs,
                        self._on_loaded, report_progress=False)
 
@@ -490,54 +559,6 @@ class MainWindow(QMainWindow):
             self._progress.close()
             self._progress = None
 
-    @Slot(object)
-    def _on_loaded(self, pc):
-        load_time = time.perf_counter() - self._t0
-        self.pc = pc
-        self.sel = Selection(len(pc))
-        self.trash = Trash(pc)
-        self.history.clear()
-        self._sel_methods = []
-        self.depth_mode = bool(pc.bbox_max[2] <= 0)   # all Z ≤ 0 → bathymetry: show as depth
-        self.viewer.set_pointcloud(pc)
-        self.sel_card.update_info(0, [])
-        self.trash_card.refresh(self.trash)
-        self.trash_card.chk_show.setChecked(False)
-        self.trash_card.setVisible(True)
-        self.tin = self.dem = None
-        self._edit_version = 0
-        self.layers_card.set_layer("tin", None)
-        self.layers_card.set_layer("dem", None)
-        self.layers_card.rows["points"]["chk"].setChecked(True)
-        self.layers_card.setVisible(True)
-        self.sections = []
-        self.active_section = -1
-        self.profile_dock.hide()
-        self._update_points_info()
-        self._update_surface_actions()
-        self.stack.setCurrentIndex(1)
-        self._close_progress()
-
-        self.cmb_color.blockSignals(True)
-        self.cmb_color.clear()
-        modes = available_modes(pc)
-        for m in modes:
-            self.cmb_color.addItem(MODE_LABELS[m], m)
-        default = "rgb" if "rgb" in modes else "elevation"
-        self.cmb_color.setCurrentIndex(self.cmb_color.findData(default))
-        self.cmb_color.blockSignals(False)
-        self.viewer.set_color_mode(default)
-
-        self._set_enabled(True)
-        self.set_mode("navigate")
-        self._set_dirty(False)
-        self.file_card.set_rows(self._info_rows(pc, load_time))
-        self._update_chips()
-        msg = f"Loaded {pc.name} in {load_time:.2f} s"
-        dropped = pc.source.get("dropped_rows", 0)
-        if dropped:
-            msg += f" · {dropped:,} invalid rows skipped"
-        self.statusBar().showMessage(msg, 6000)
 
     @Slot(str)
     def _on_failed(self, msg):
@@ -551,7 +572,7 @@ class MainWindow(QMainWindow):
 
     # ---------- color scale ----------
     def _on_scale_changed(self, mode, sc):
-        if sc is None or self.pc is None or sc.vmin is None:
+        if sc is None or sc.vmin is None:
             self.scale_card.setVisible(False)
             self.colorbar.hide()
             return
@@ -559,7 +580,7 @@ class MainWindow(QMainWindow):
         depth = self.depth_mode and mode == "elevation"
         self.scale_card.sync(mode, sc, depth, self.viewer.data_range())
         title = ("Depth" if depth else "Elevation") if mode == "elevation" else MODE_LABELS[mode]
-        self.colorbar.set_state(sc.lut, sc.amin, sc.amax, sc.vmin, sc.vmax, title,
+        self.colorbar.set_state(self._bar_lut(sc), sc.amin, sc.amax, sc.vmin, sc.vmax, title,
                                 unit="m" if mode == "elevation" else "", depth=depth,
                                 gray_out=sc.out_of_range == "gray")
         self.colorbar.setVisible(self.scale_card.chk_bar.isChecked())
@@ -607,14 +628,15 @@ class MainWindow(QMainWindow):
     def on_depth(self, on):
         self.depth_mode = bool(on)
         self._on_scale_changed(self.viewer.scale_mode, self.viewer.scale)
+        if self.project.of_kind("contour"):
+            self._show_contours(rebuild=True)          # labels as depth or elevation
 
     def on_show_bar(self, on):
         self._on_scale_changed(self.viewer.scale_mode, self.viewer.scale)
 
     # ---------- selection ----------
     def set_mode(self, mode):
-        if mode == "section" and self.pc is not None and self.viewer.camera.elevation < 80:
-            self.viewer.set_view("top")
+        # the camera is left exactly as the user set it (no automatic switch to top view)
         self.mode_actions[mode].setChecked(True)
         self.selector.set_mode(mode)
         self.mode_label.setText(MODE_HINTS[mode])
@@ -712,6 +734,9 @@ class MainWindow(QMainWindow):
         cmd = self.history.undo()
         if cmd is None:
             return
+        if isinstance(cmd, ClassifyCommand) and getattr(cmd, "reselect", True):
+            self.sel.apply(cmd.idx[self.pc.active_mask()[cmd.idx]], "replace")
+            self._sel_methods = ["Subset"]
         if isinstance(cmd, DeleteCommand):  # bring the points back *selected*, ready to adjust
             self.sel.apply(cmd.idx, "replace")
             self._sel_methods = [cmd.batch.note]
@@ -776,12 +801,12 @@ class MainWindow(QMainWindow):
         self._update_trash_view()
         self._selection_changed()
         self._update_edit_actions()
-        self._edit_version += 1
-        self._update_points_info()
+        bds = self._bound_ds()
+        if bds is not None:
+            bds.edit_version += 1
+        self._refresh_data_card()
         self._recompute_section()
-        for kind in ("tin", "dem"):
-            obj = getattr(self, kind)
-            self.layers_card.set_outdated(kind, obj is not None and obj.version != self._edit_version)
+        self._refresh_subset_if_open()
         self._set_dirty(True)
         self.statusBar().showMessage(message, 6000)
 
@@ -812,7 +837,9 @@ class MainWindow(QMainWindow):
 
     # ---------- sections / profiles ----------
     def _overlay_sections(self, draft=None, cursor=None):
-        self.viewer.set_section_overlay([(sc.xy, sc.width) for sc in self.sections], self.active_section,
+        vis = [i for i, sc in enumerate(self.sections) if sc.visible]
+        active = vis.index(self.active_section) if self.active_section in vis else -1
+        self.viewer.set_section_overlay([(self.sections[i].xy, self.sections[i].width) for i in vis], active,
                                         draft, cursor)
 
     def _on_section_draft(self, draft, cursor):
@@ -820,13 +847,18 @@ class MainWindow(QMainWindow):
         self._update_edit_actions()   # Backspace removes the last vertex while drawing
 
     def _on_section_finish(self, pts):
+        if self._poly_mode:
+            return self._finish_polygon(pts)
         n = len(self.sections) + 1
         width = self.sections[self.active_section].width if self.active_section >= 0 else 1.0
         sec = prof.Section(f"Section {n}", np.asarray(pts, dtype=np.float64), width=width)
         self.sections.append(sec)
+        self._set_dirty(True)
         self.active_section = len(self.sections) - 1
+        self._show_dock(self.profile_dock)
         self._recompute_section(fit=True)
-        self.profile_dock.show()
+        self._fit_profile_later()
+        self._refresh_drawings()
         self.statusBar().showMessage(f"{sec.name}: {sec.length:,.2f} m, {len(sec.result['idx']):,} points "
                                      f"within ±{sec.width:g} m", 6000)
 
@@ -837,21 +869,70 @@ class MainWindow(QMainWindow):
         if final:
             self._recompute_section()
 
+    def _project_path_stem(self, fallback):
+        for d in self.project.datasets:
+            if d.path:
+                return d.path
+        return fallback
+
+    @staticmethod
+    def _bar_lut(sc):
+        """LUT drawn between the colour-bar handles (non-linear palettes are sampled through map_scalar)."""
+        if sc.palette == "Topo-bathy" and sc.vmin is not None:
+            return map_scalar(np.linspace(sc.vmin, sc.vmax, 256), sc)
+        return sc.lut
+
+    def _set_dist_label(self, label):
+        from PySide6.QtCore import QSettings
+
+        from core.route import DIST_LABEL
+        DIST_LABEL[0] = label
+        QSettings("PointCloudStudio", "PointCloudStudio").setValue("ui/dist_label", label)
+        self._show_routes()
+        self._recompute_section()
+        self._refresh_subset_if_open()
+
+    def _set_nav_visible(self, on):
+        from PySide6.QtCore import QSettings
+        self.nav_card.setVisible(bool(on))
+        QSettings("PointCloudStudio", "PointCloudStudio").setValue("ui/show_navigation", bool(on))
+
+    def _fit_profile_later(self):
+        """Fit the profile once its dock has its real size (fitting a hidden dock gives a wrong V.exag)."""
+        def fit():
+            self.profile.plot.fit()
+            self.profile._sync_vex()
+        QTimer.singleShot(0, fit)
+
+    def _profile_cloud(self):
+        if self.pc is not None:
+            return self.pc
+        vis = self.project.of_kind("points", visible_only=True)
+        return vis[0].obj if vis else None
+
     def _section_colors(self, idx):
-        mode = self.viewer.color_mode
+        pc = self._profile_cloud()
+        mode = self.viewer.color_mode if pc is self.pc else "elevation"
         if mode in SCALAR_MODES and self.viewer.scales[mode].vmin is not None:
-            return map_scalar(scalar_values(self.pc, idx, mode), self.viewer.scales[mode])
-        return compute_colors(self.pc, idx, mode)
+            return map_scalar(scalar_values(pc, idx, mode), self.viewer.scales[mode])
+        return compute_colors(pc, idx, mode)
 
     def _recompute_section(self, fit=False):
-        if self.pc is None or self.active_section < 0:
+        pc = self._profile_cloud()
+        if self.active_section < 0 or (pc is None and self.tin is None and self.dem is None):
             self._overlay_sections()
             return
         sec = self.sections[self.active_section]
-        prof.compute(sec, self.pc, self.tin, self.dem)
+        if pc is None:      # surfaces only: empty point set
+            from core.pointcloud import PointCloud
+            pc = PointCloud(np.array([[sec.xy[0, 0], sec.xy[0, 1], 0.0]]))
+            pc.deleted_batch[:] = -1
+        prof.compute(sec, pc, None, None)          # surfaces + other clouds come as coloured layers
+        sec.result["layers"] = self._profile_layers(sec, pc)
         self.profile.set_sections([sc.name for sc in self.sections], self.active_section)
         depth = self.depth_mode and self.viewer.scale_mode in (None, "elevation")
-        self.profile.show_section(sec, self._section_colors(sec.result["idx"]), depth, fit)
+        self.profile.show_section(sec, self._section_colors(sec.result["idx"]), depth, fit,
+                                  sec.result.get("layers", []))
         self._overlay_sections()
 
     def _refresh_profile_colors(self):
@@ -860,7 +941,8 @@ class MainWindow(QMainWindow):
         sec = self.sections[self.active_section]
         if sec.result:
             depth = self.depth_mode and self.viewer.scale_mode in (None, "elevation")
-            self.profile.show_section(sec, self._section_colors(sec.result["idx"]), depth, False)
+            self.profile.show_section(sec, self._section_colors(sec.result["idx"]), depth, False,
+                                      sec.result.get("layers", []))
 
     # ProfilePanel callbacks
     def select_section(self, i):
@@ -882,18 +964,20 @@ class MainWindow(QMainWindow):
         if self.active_section < 0:
             return
         del self.sections[self.active_section]
+        self._set_dirty(True)
         self.active_section = len(self.sections) - 1
         if self.active_section < 0:
             self.profile_dock.hide()
             self._overlay_sections()
         else:
             self._recompute_section(fit=True)
+        self._refresh_drawings()
 
     def export_section_csv(self):
         if self.active_section < 0:
             return
         sec = self.sections[self.active_section]
-        stem = os.path.splitext(self.pc.source.get("path", "section"))[0]
+        stem = os.path.splitext(self._project_path_stem("section"))[0]
         path, _ = QFileDialog.getSaveFileName(self, "Export section", f"{stem}_{sec.name.replace(' ', '_')}.csv",
                                               "CSV (*.csv)")
         if not path:
@@ -901,18 +985,19 @@ class MainWindow(QMainWindow):
         r = sec.result
         rows = []
         if len(r["idx"]):
-            xy = self.pc.xyz[r["idx"], :2]
-            rows.append(np.column_stack([np.zeros(len(xy)), r["chainage"] + sec.start, xy, r["z"], r["offset"],
+            xy = self._profile_cloud().xyz[r["idx"], :2]
+            rows.append(np.column_stack([np.zeros(len(xy)), sec.disp(r["chainage"]), xy, r["z"], r["offset"],
                                          r["idx"]]))
-        for code, key in ((1, "tin"), (2, "dem")):
-            if r.get(key) is not None and len(r[key][0]):
-                c, z = r[key]
-                ok = np.isfinite(c) & np.isfinite(z)
-                xy = sec.xy_at(c[ok] + sec.start)
-                rows.append(np.column_stack([np.full(ok.sum(), code), c[ok] + sec.start, xy, z[ok],
-                                             np.zeros(ok.sum()), np.full(ok.sum(), -1)]))
+        names = ["point"]
+        for lay in r.get("layers", []):
+            c, z = lay["ch"], lay["z"]
+            ok = np.isfinite(c) & np.isfinite(z)
+            xy = sec.xy_at(c[ok])
+            names.append(lay["name"].replace(",", " "))
+            rows.append(np.column_stack([np.full(ok.sum(), len(names) - 1), c[ok], xy, z[ok],
+                                         np.zeros(ok.sum()), np.full(ok.sum(), -1)]))
         data = np.vstack(rows) if rows else np.empty((0, 7))
-        names = np.array(["point", "tin", "dem"])
+        names = np.array(names)
         with open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(f"# {sec.name}; length {sec.length:.3f} m; corridor ±{sec.width:g} m; start chainage {sec.start:g} m\n")
             f.write("# vertices: " + "; ".join(f"{x:.3f},{y:.3f}" for x, y in sec.xy) + "\n")
@@ -926,7 +1011,7 @@ class MainWindow(QMainWindow):
         if self.active_section < 0:
             return
         sec = self.sections[self.active_section]
-        stem = os.path.splitext(self.pc.source.get("path", "section"))[0]
+        stem = os.path.splitext(self._project_path_stem("section"))[0]
         path, _ = QFileDialog.getSaveFileName(self, "Save profile image",
                                               f"{stem}_{sec.name.replace(' ', '_')}.png", "PNG (*.png)")
         if path:
@@ -934,134 +1019,22 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Saved {os.path.basename(path)}", 6000)
 
     # ---------- surfaces (TIN / DEM) ----------
-    def _source_idx(self, source):
-        db = self.pc.deleted_batch
-        return np.flatnonzero(self.sel.mask if source == "selected" else db == 0)
 
-    def _counts(self):
-        return dict(active=self.pc.n_active, selected=self.sel.count)
 
-    def _update_points_info(self):
-        if self.pc is not None:
-            self.layers_card.set_points_info(f"{self.pc.n_active:,} active points")
 
-    def _update_surface_actions(self):
-        self.act_exp_tin.setEnabled(self.tin is not None)
-        self.act_exp_dem.setEnabled(self.dem is not None)
 
-    def create_tin(self):
-        if self.pc is None:
-            return
-        idx = self.pc.active_indices()
-        sp = mean_spacing(self.pc.xyz, idx)
-        ext = self.pc.bbox_max - self.pc.bbox_min
-        dlg = TinDialog(self._counts(), sp, max(ext[0] * ext[1], 1e-6), self)
-        if dlg.exec() != QDialog.Accepted:
-            return
-        p = dlg.params()
-        src = self._source_idx(p.pop("source"))
-        self._surface_version = self._edit_version
-        self._run_task("Building TIN…", build_tin, (self.pc.xyz, src), p, self._on_tin_built,
-                       report_progress=True)
 
-    @Slot(object)
-    def _on_tin_built(self, tin):
-        self._close_progress()
-        dt = time.perf_counter() - self._t0
-        tin.version = self._surface_version
-        self.tin = tin
-        self.viewer.set_surface("tin", tin)
-        info = f"{len(tin.triangles):,} triangles · {len(tin.vertices):,} vertices"
-        info += f" · max edge {tin.max_edge:g} m" if tin.max_edge else ""
-        info += f" · thinned {tin.thin_cell:g} m" if tin.thin_cell else ""
-        self.layers_card.set_layer("tin", info)
-        self._update_surface_actions()
-        self._recompute_section()
-        self.statusBar().showMessage(f"TIN built in {dt:.1f} s ({len(tin.triangles):,} triangles)", 8000)
 
-    def create_dem(self):
-        if self.pc is None:
-            return
-        idx = self.pc.active_indices()
-        sp = mean_spacing(self.pc.xyz, idx)
-        bbox = (*self.pc.bbox_min[:2], *self.pc.bbox_max[:2])
-        tin_state = None if self.tin is None else ("ok" if self.tin.version == self._edit_version else "outdated")
-        zr = (float(self.pc.bbox_min[2]), float(self.pc.bbox_max[2]))
-        dlg = DemDialog(self._counts(), sp, bbox, tin_state, self, zrange=zr)
-        if dlg.exec() != QDialog.Accepted:
-            return
-        p = dlg.params()
-        src = self._source_idx(p.pop("source"))
-        tin = self.tin if p.pop("use_tin") else None
-        self._surface_version = self._edit_version
-        self._run_task("Building DEM…", build_dem, (self.pc.xyz, src), dict(p, tin=tin),
-                       self._on_dem_built, report_progress=True)
 
-    @Slot(object)
-    def _on_dem_built(self, dem):
-        self._close_progress()
-        dt = time.perf_counter() - self._t0
-        dem.version = self._surface_version
-        self.dem = dem
-        self.viewer.set_surface("dem", dem)
-        nr, nc = dem.shape
-        valid = float(np.isfinite(dem.z).mean()) * 100
-        info = f"{dem.cell:g} m · {nc:,} × {nr:,} · {DEM_METHODS[dem.method]} · {valid:.0f}% filled"
-        if dem.has_true_position:
-            info += f" · {dem.meta['soundings']:,} shoal soundings"
-        self.layers_card.set_layer("dem", info)
-        self._update_surface_actions()
-        self._recompute_section()
-        self.statusBar().showMessage(f"DEM built in {dt:.1f} s ({nc:,} × {nr:,} cells)", 8000)
 
-    def remove_surface(self, kind):
-        setattr(self, kind, None)
-        self.viewer.set_surface(kind, None)
-        self.layers_card.set_layer(kind, None)
-        self._update_surface_actions()
-        self._recompute_section()
 
-    # LayersCard callbacks
-    def set_layer_visible(self, name, on):
-        self.viewer.set_layer_visible(name, on)
 
-    def set_layer_opacity(self, name, a):
-        self.viewer.set_layer_opacity(name, a)
 
-    def set_wireframe(self, on):
-        self.viewer.set_wireframe("tin", on)
 
-    def set_hillshade(self, on):
-        self.viewer.set_hillshade(on)
 
-    def _surface_crs(self):
-        """CRS for GeoTIFF: from the LAS file if present, else ask for an optional EPSG code."""
-        las = self.pc.source.get("las")
-        if las is not None:
-            try:
-                crs = las.header.parse_crs()
-                if crs is not None:
-                    return crs, True
-            except Exception:
-                pass
-        from PySide6.QtWidgets import QInputDialog
-        text, ok = QInputDialog.getText(self, "Coordinate system",
-                                        "EPSG code for the GeoTIFF (leave empty for none),\n"
-                                        "e.g. 3826 = TWD97 / TM2 zone 121:")
-        if not ok:
-            return None, False
-        text = text.strip()
-        if not text:
-            return None, True
-        try:
-            from pyproj import CRS
-            return CRS.from_epsg(int(text)), True
-        except Exception as e:
-            QMessageBox.warning(self, "Invalid EPSG code", str(e))
-            return None, False
 
     def _save_surface_path(self, title, formats, suffix):
-        stem = os.path.splitext(self.pc.source.get("path", "surface"))[0] + suffix
+        stem = os.path.splitext(self._project_path_stem("surface"))[0] + suffix
         filters = ";;".join(formats.values())
         path, flt = QFileDialog.getSaveFileName(self, title, stem + next(iter(formats)), filters)
         if not path:
@@ -1072,29 +1045,7 @@ class MainWindow(QMainWindow):
             path += ext
         return path
 
-    def export_tin(self):
-        if self.tin is None:
-            return
-        path = self._save_surface_path("Export TIN", TIN_FORMATS, "_tin")
-        if path:
-            self._exporting = True
-            self._run_task(f"Exporting {os.path.basename(path)}…", export_tin, (self.tin, path), {},
-                           lambda _: self._on_surface_exported(path), report_progress=True)
 
-    def export_dem(self):
-        if self.dem is None:
-            return
-        path = self._save_surface_path("Export DEM", DEM_FORMATS, "_dem")
-        if not path:
-            return
-        crs = None
-        if path.lower().endswith((".tif", ".tiff")):
-            crs, ok = self._surface_crs()
-            if not ok:
-                return
-        self._exporting = True
-        self._run_task(f"Exporting {os.path.basename(path)}…", export_dem, (self.dem, path),
-                       dict(crs=crs), lambda _: self._on_surface_exported(path), report_progress=True)
 
     def _on_surface_exported(self, path):
         self._exporting = False
@@ -1102,18 +1053,22 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Exported {os.path.basename(path)}", 8000)
 
     # ---------- export ----------
-    def export_file(self):
-        if self.pc is None:
+    def export_file(self, ds=None):
+        if ds is None or ds is False:
+            ds = self._bound_ds() or self._pick_source_points("Export point cloud")
+        if ds is None:
             return
-        db = self.pc.deleted_batch
-        counts = dict(active=self.pc.n_active, selected=self.sel.count,
-                      trash=int(np.count_nonzero(db > 0)))
-        dlg = ExportDialog(self.pc, counts, self)
+        pc, sel = ds.obj, ds.sel
+        db = pc.deleted_batch
+        noise = pc.noise_mask() & (db == 0)
+        counts = dict(active=int(np.count_nonzero(db == 0)), selected=sel.count if ds.id == self._bound_id else 0,
+                      trash=int(np.count_nonzero(db > 0)), noise=int(np.count_nonzero(noise)))
+        dlg = ExportDialog(pc, counts, self)
         if dlg.exec() != QDialog.Accepted:
             return
         job = dlg.job()
         targets = [job["path"]] + ([job["trash_path"]] if job["trash_path"] else [])
-        src = os.path.abspath(self.pc.source.get("path", ""))
+        src = os.path.abspath(pc.source.get("path", ""))
         clash = [t for t in targets if os.path.abspath(t) == src]
         if clash:
             r = QMessageBox.warning(self, "Overwrite source file?",
@@ -1121,13 +1076,15 @@ class MainWindow(QMainWindow):
                                     QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
             if r != QMessageBox.Yes:
                 return
-        content = {"active": db == 0, "selected": self.sel.mask, "trash": db > 0}[job["content"]]
+        content = {"active": db == 0, "selected": sel.mask, "trash": db > 0}[job["content"]]
+        if job.get("exclude_noise"):
+            content = content & ~noise
         tasks = [(np.flatnonzero(content), job["path"])]
         if job["trash_path"]:
             tasks.append((np.flatnonzero(db > 0), job["trash_path"]))
         self._export_job = job
 
-        pc, fmt, opts = self.pc, job["fmt"], job["opts"]
+        fmt, opts = job["fmt"], job["opts"]
 
         def run(progress):
             total = sum(len(i) for i, _ in tasks)
@@ -1156,16 +1113,22 @@ class MainWindow(QMainWindow):
     # ---------- unsaved changes ----------
     def _set_dirty(self, dirty):
         self._dirty = dirty
-        if self.pc is not None:
-            self.setWindowTitle(f"{'● ' if dirty else ''}{self.pc.name} — {APP_NAME}")
+        names = [d.name for d in self.project.datasets] if hasattr(self, "project") else []
+        if not names:
+            self.setWindowTitle(APP_NAME)
+            return
+        main = names[0] + (f" (+{len(names) - 1})" if len(names) > 1 else "")
+        if getattr(self, "project_path", None):
+            main = os.path.splitext(os.path.basename(self.project_path))[0] + ".pcsproj"
+        self.setWindowTitle(f"{'● ' if dirty else ''}{main} — {APP_NAME}")
 
     def _confirm_discard(self, action):
-        if not self._dirty or self.pc is None:
+        if not self._dirty or not self.project.datasets:
             return True
-        box = QMessageBox(QMessageBox.Warning, "Unsaved edits",
-                          f"You have edits to {self.pc.name} that haven't been exported.", parent=self)
-        box.setInformativeText(f"Discard them and {action}?")
-        btn_export = box.addButton("Export…", QMessageBox.AcceptRole)
+        box = QMessageBox(QMessageBox.Warning, "Unsaved changes",
+                          "The project has changes that have not been saved.", parent=self)
+        box.setInformativeText(f"Save the project before you {action}?")
+        btn_save = box.addButton("Save Project", QMessageBox.AcceptRole)
         btn_discard = box.addButton("Discard", QMessageBox.DestructiveRole)
         btn_discard.setProperty("danger", True)
         btn_discard.style().unpolish(btn_discard)
@@ -1173,9 +1136,8 @@ class MainWindow(QMainWindow):
         box.addButton(QMessageBox.Cancel)
         box.exec()
         clicked = box.clickedButton()
-        if clicked is btn_export:
-            self.export_file()
-            return False
+        if clicked is btn_save:
+            return bool(self.save_project())
         return clicked is btn_discard
 
     def closeEvent(self, e):
@@ -1192,7 +1154,13 @@ class MainWindow(QMainWindow):
     def dropEvent(self, e):
         urls = e.mimeData().urls()
         if urls:
-            self.load_path(urls[0].toLocalFile())
+            paths = [u.toLocalFile() for u in urls]
+            if self.project.datasets:
+                self._load_queue = paths
+                self._next_in_queue()
+            else:
+                self._load_queue = paths[1:]
+                self.load_path(paths[0], add=False)
 
     # ---------- file info ----------
     @staticmethod

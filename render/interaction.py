@@ -10,7 +10,7 @@ from vispy.util import keys
 
 from render.overlay import SelectionOverlay
 
-MODES = ("navigate", "pick", "box", "lasso", "section")
+MODES = ("navigate", "pick", "box", "lasso", "section", "subset")
 
 
 class SelectionController:
@@ -36,6 +36,10 @@ class SelectionController:
         self.on_section_finish = None   # callback(list of world xy)
         self.get_section_vertices = None
         self.on_vertex_moved = None     # callback(i, xy, final)
+        # subset drawing (drag the long axis in plan view)
+        self._sub_p0 = None
+        self.on_subset_draft = None     # callback(p0, p1) or (None, None) to clear
+        self.on_subset_finish = None    # callback(p0, p1)
         ev = viewer.canvas.events
         ev.mouse_double_click.connect(self._on_double)
         ev.mouse_press.connect(self._on_press)
@@ -52,12 +56,16 @@ class SelectionController:
 
     @property
     def drawing(self):
-        return self._press is not None
+        return self._press is not None or self._sub_p0 is not None
 
     def cancel(self):
         self._press = None
         self._path = []
         self.overlay.clear()
+        if self._sub_p0 is not None:
+            self._sub_p0 = None
+            if self.on_subset_draft:
+                self.on_subset_draft(None, None)
         had = bool(self.draft)
         self.draft = []
         self.cursor_xy = None
@@ -98,6 +106,9 @@ class SelectionController:
     def _on_press(self, e):
         if self.mode == "navigate" or e.button != 1:
             return
+        if self.mode == "subset":
+            self._sub_p0 = self.viewer.screen_to_xy(e.pos)
+            return
         if self.mode == "section" and not self.draft and self.get_section_vertices is not None:
             verts = self.get_section_vertices()
             if verts is not None and len(verts):
@@ -110,6 +121,12 @@ class SelectionController:
         self._path = [self._press]
 
     def _on_move(self, e):
+        if self.mode == "subset":
+            if self._sub_p0 is not None:
+                p1 = self.viewer.screen_to_xy(e.pos)
+                if p1 is not None:
+                    self.on_subset_draft(self._sub_p0, p1)
+            return
         if self.mode == "section":
             if self._vdrag is not None:
                 xy = self.viewer.screen_to_xy(e.pos)
@@ -131,6 +148,15 @@ class SelectionController:
                 self.overlay.set_path(self._path)
 
     def _on_release(self, e):
+        if self.mode == "subset" and e.button == 1:
+            p0, self._sub_p0 = self._sub_p0, None
+            p1 = self.viewer.screen_to_xy(e.pos)
+            self.on_subset_draft(None, None)
+            if p0 is not None and p1 is not None and np.hypot(*(p1 - p0)) > 1e-3:
+                s0 = self.viewer.xy_to_screen(p0)[0]
+                if math.hypot(s0[0] - e.pos[0], s0[1] - e.pos[1]) > 5:
+                    self.on_subset_finish(p0, p1)
+            return
         if self.mode == "section" and e.button == 1:
             if self._vdrag is not None:
                 xy = self.viewer.screen_to_xy(e.pos)

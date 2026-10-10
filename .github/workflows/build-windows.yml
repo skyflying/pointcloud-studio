@@ -1,0 +1,61 @@
+# Builds the Windows app on GitHub's Windows runners.
+#  - Manual run:  Actions tab → "Build Windows" → Run workflow   → download the artifact
+#  - Release:     push a tag like v0.1.12                          → zip attached to a GitHub Release
+name: Build Windows
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build with PyInstaller
+        run: pyinstaller PointCloudStudio.spec --noconfirm
+
+      - name: Self-test packaged app
+        # Runners have no GPU: use Qt's bundled software OpenGL for the render check.
+        shell: pwsh
+        env:
+          QT_OPENGL: software
+        continue-on-error: true
+        run: |
+          $p = Start-Process -FilePath "dist\PointCloudStudio\PointCloudStudio.exe" `
+                             -ArgumentList "--selftest","--quiet" -Wait -PassThru
+          Get-Content "dist\PointCloudStudio\selftest_report.txt"
+          if ($p.ExitCode -ne 0) { Write-Error "Self-test failed"; exit 1 }
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          Remove-Item "dist\PointCloudStudio\selftest_report.txt" -ErrorAction SilentlyContinue
+          Compress-Archive -Path "dist\PointCloudStudio" -DestinationPath "PointCloudStudio-windows.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PointCloudStudio-windows
+          path: PointCloudStudio-windows.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: PointCloudStudio-windows.zip
+          generate_release_notes: true

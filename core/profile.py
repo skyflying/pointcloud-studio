@@ -15,6 +15,8 @@ class Section:
     width: float = 1.0                # corridor half-width (m)
     start: float = 0.0                # chainage at the first vertex (e.g. KP offset, m)
     result: dict = field(default_factory=dict)
+    kp: np.ndarray | None = None      # KP (km) per vertex for route-based sections (display in KP)
+    visible: bool = True              # shown in the 3D view (Data panel → Drawings)
 
     @property
     def seg_len(self):
@@ -24,10 +26,29 @@ class Section:
     def length(self):
         return float(self.seg_len.sum())
 
+    @property
+    def cum(self):
+        return np.r_[0, np.cumsum(self.seg_len)]
+
+    def disp(self, ch):
+        """Distance along the line (m) → displayed chainage (m): KP×1000 for routes, else ch + start."""
+        if self.kp is not None:
+            return np.interp(ch, self.cum, self.kp * 1000.0)
+        return np.asarray(ch, float) + self.start
+
+    def inv(self, d):
+        """Displayed chainage → distance along the line (m)."""
+        if self.kp is not None:
+            k = self.kp * 1000.0
+            if np.all(np.diff(k) >= 0):
+                return np.interp(d, k, self.cum)
+            return np.interp(d, k[::-1], self.cum[::-1])
+        return np.asarray(d, float) - self.start
+
     def xy_at(self, chainage):
-        """World XY at chainage (relative to start)."""
-        cum = np.r_[0, np.cumsum(self.seg_len)]
-        s = np.clip(np.asarray(chainage, float) - self.start, 0, cum[-1])
+        """World XY at a DISPLAYED chainage."""
+        cum = self.cum
+        s = np.clip(self.inv(chainage), 0, cum[-1])
         i = np.clip(np.searchsorted(cum, s, side="right") - 1, 0, len(self.xy) - 2)
         t = (s - cum[i]) / np.maximum(self.seg_len[i], 1e-12)
         return self.xy[i] + (self.xy[i + 1] - self.xy[i]) * t[..., None]
@@ -180,7 +201,7 @@ def dem_section(dem, sec, step=None):
     step = step or dem.cell / 2
     n = max(2, int(np.ceil(sec.length / step)) + 1)
     ch = np.linspace(0, sec.length, n)
-    xy = sec.xy_at(ch + sec.start)
+    xy = sec.xy_at(sec.disp(ch))
     c = (xy[:, 0] - dem.x0) / dem.cell - 0.5
     r = (dem.ytop - xy[:, 1]) / dem.cell - 0.5
     nr, nc = dem.z.shape
