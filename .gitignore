@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# PyInstaller
+build/
+dist/
+
+# Runtime / test output
+selftest_report.txt
+*.log
+
+# Large survey data (keep point clouds out of the repository)
+*.las
+*.laz
+*.xyz
+*.asc
+*.pts
+*.tif
+*.tiff
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+check_env_report.txt
+diagnose_report.txt
+startup_error.txt
+
+# User projects and GIS outputs
+*.pcsproj
+*.pcsproj_data/
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.dxf
