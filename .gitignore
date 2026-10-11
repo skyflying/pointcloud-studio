@@ -40,3 +40,7 @@ startup_error.txt
 *.prj
 *.cpg
 *.dxf
+
+# macOS build
+.venv-build/
+*.dmg

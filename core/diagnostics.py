@@ -71,6 +71,12 @@ def report(error=None):
                 hits.append(os.path.join(d, name))
     lines += ["", "Qt libraries found on PATH:" if hits else "Qt libraries found on PATH: none"]
     lines += [f"  {h}" for h in hits]
+    if sys.platform == "darwin":
+        lines += ["", "Common fixes (macOS):",
+                  "  1. Build with build_mac.sh (python.org Python, clean venv) — not Anaconda.",
+                  "  2. App blocked as 'damaged' / 'unidentified developer': xattr -cr PointCloudStudio.app",
+                  "  3. Running from source: pip install --force-reinstall PySide6  (all PySide6 parts same version)."]
+        return "\n".join(lines)
     lines += ["", "Common fixes:",
               "  1. Rebuild with build_windows.bat (clean venv, PATH isolated) — do not build from Anaconda base.",
               "  2. Delete the whole old dist\\PointCloudStudio folder before copying a new build (never mix builds).",
@@ -80,7 +86,8 @@ def report(error=None):
 
 
 def write_report(text, name="startup_error.txt"):
-    base = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.getcwd()
+    from core.platform_util import report_dir
+    base = report_dir()
     for folder in (base, os.path.expanduser("~")):
         try:
             path = os.path.join(folder, name)

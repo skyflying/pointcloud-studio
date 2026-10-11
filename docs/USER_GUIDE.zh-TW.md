@@ -11,6 +11,18 @@
 到 GitHub 專案的 **Releases** 頁面下載 `PointCloudStudio-windows.zip`，解壓後執行 `PointCloudStudio.exe`
 （不需安裝 Python；第一次執行若出現 SmartScreen，按「其他資訊 → 仍要執行」）。
 
+## 下載 macOS 版
+到 **Releases** 頁面下載 DMG：Apple Silicon（M 系列晶片）選 `…-macos-arm64.dmg`，Intel Mac 選 `…-macos-x86_64.dmg`
+（需 macOS 11 以上）。打開 DMG 後，把 PointCloudStudio 拖進「應用程式」資料夾。
+
+程式沒有 Apple 開發者簽章，第一次開啟會被擋下（顯示「無法打開」或「已損毀」）。請在 App 上按右鍵 →「打開」→「打開」，
+或在「終端機」執行一次：
+```
+xattr -cr /Applications/PointCloudStudio.app
+```
+Mac 操作差異：快捷鍵的 Ctrl 改為 ⌘（Command），鍵盤上的 delete 鍵即可剔除選取點；
+觸控板雙指滑動或捏合可縮放，Shift + 拖曳可平移。
+
 ## 從原始碼執行 / 安裝
 ```
 pip install -r requirements.txt
@@ -121,6 +133,8 @@ python main.py 檔案.laz      # 直接載入
 ## 打包成執行檔
 請見英文 README 的「Building a standalone executable」：執行 `build_windows.bat`（需 python.org 版 Python，不可使用 Anaconda）；
 程式無法啟動時查看 `%LOCALAPPDATA%\\PointCloudStudio\\startup.log` 或執行 `check_env.bat`。（Windows：雙擊 build_windows.bat）。打包後可用 `--selftest` 驗證。
+macOS：在專案資料夾執行 `./build_mac.sh`（同樣需 python.org 版 Python），產生 `dist/PointCloudStudio.app` 與 DMG；
+啟動記錄與報告位於 `~/Library/Application Support/PointCloudStudio/`。
 
 ## 專案架構（多份資料、座標系統）
 - **Open**（Ctrl+O）：開新專案；**Add Data**（Ctrl+Shift+O 或拖曳多個檔案）：加入點雲或 DEM 到目前專案

@@ -6,6 +6,7 @@ import platform
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QGridLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
+from core.platform_util import key_text
 from core.version import APP_NAME, AUTHOR, AUTHOR_EMAIL, __version__
 from ui.icons import point_cloud_pixmap
 from ui.theme import C, dark_titlebar
@@ -111,7 +112,7 @@ class ShortcutsDialog(_Base):
             grid.addWidget(h, r, 0, 1, 2)
             r += 1
             for keys, what in items:
-                k = QLabel(keys)
+                k = QLabel(key_text(keys))
                 k.setStyleSheet(f"color:{C['text']}; font-weight:600")
                 d = QLabel(what)
                 d.setObjectName("muted")

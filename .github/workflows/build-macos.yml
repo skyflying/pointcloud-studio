@@ -1,0 +1,72 @@
+# Builds the macOS app on GitHub's macOS runners (Apple Silicon + Intel).
+#  - Manual run:  Actions tab → "Build macOS" → Run workflow   → download the artifacts
+#  - Release:     push a tag like v0.1.13                      → DMGs attached to the GitHub Release
+# The app is not signed with an Apple Developer ID: on first start use right-click → Open,
+# or run  xattr -cr /Applications/PointCloudStudio.app  (see README).
+name: Build macOS
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15          # Apple Silicon (arm64)
+            arch: arm64
+          - runner: macos-15-intel    # Intel (x86_64) — GitHub retires Intel macOS runners in 2027
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build with PyInstaller
+        run: pyinstaller PointCloudStudio.spec --noconfirm
+
+      - name: Self-test packaged app
+        continue-on-error: true
+        run: |
+          set +e
+          dist/PointCloudStudio.app/Contents/MacOS/PointCloudStudio --selftest --quiet
+          code=$?
+          cat "$HOME/Library/Application Support/PointCloudStudio/selftest_report.txt" || true
+          exit $code
+
+      - name: Disk image
+        id: dmg
+        run: |
+          VERSION=$(python -c 'from core.version import __version__; print(__version__)')
+          DMG="PointCloudStudio-${VERSION}-macos-${{ matrix.arch }}.dmg"
+          STAGE=$(mktemp -d)
+          cp -R dist/PointCloudStudio.app "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "PointCloud Studio" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+          echo "file=$DMG" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PointCloudStudio-macos-${{ matrix.arch }}
+          path: ${{ steps.dmg.outputs.file }}
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.dmg.outputs.file }}

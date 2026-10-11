@@ -45,6 +45,7 @@ from ui.theme import dark_titlebar
 from ui.widgets import (Card, ColorScaleCard, FileInfoCard, SelectionCard, TrashCard,
                         muted as _muted)
 
+from core.platform_util import key_text  # noqa: E402
 from core.version import APP_NAME, __version__  # noqa: E402
 MODE_HINTS = {
     "navigate": "Navigate · Left drag rotate · Right drag / wheel zoom · Shift+Left or Middle drag pan",
@@ -399,7 +400,7 @@ class MainWindow(ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteM
                                     ("Delete", "Reject selection (class / trash)"),
                                     ("U · PgUp · PgDn", "Subset · previous · next page"),
                                     ("Ctrl+Z · Ctrl+Y", "Undo · Redo"))):
-            grid.addWidget(QLabel(k), r, 0)
+            grid.addWidget(QLabel(key_text(k)), r, 0)
             grid.addWidget(_muted(d), r, 1)
         nav.body.addLayout(grid)
 
@@ -639,7 +640,7 @@ class MainWindow(ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteM
         # the camera is left exactly as the user set it (no automatic switch to top view)
         self.mode_actions[mode].setChecked(True)
         self.selector.set_mode(mode)
-        self.mode_label.setText(MODE_HINTS[mode])
+        self.mode_label.setText(key_text(MODE_HINTS[mode]))
 
     def _on_select_request(self, kind, data, op):
         if self.pc is None:
@@ -808,7 +809,7 @@ class MainWindow(ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteM
         self._recompute_section()
         self._refresh_subset_if_open()
         self._set_dirty(True)
-        self.statusBar().showMessage(message, 6000)
+        self.statusBar().showMessage(key_text(message), 6000)
 
     def _update_trash_view(self):
         if self.pc is None:

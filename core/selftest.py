@@ -1,7 +1,8 @@
 """Self-test for packaged builds:  PointCloudStudio --selftest
 
 Exercises every heavy dependency (LAZ codec, SciPy, rasterio/GDAL, pyproj/PROJ,
-VisPy shaders + OpenGL, Qt) and writes selftest_report.txt next to the executable.
+VisPy shaders + OpenGL, Qt) and writes selftest_report.txt next to the executable
+(macOS app: ~/Library/Application Support/PointCloudStudio).
 """
 from __future__ import annotations
 
@@ -13,7 +14,8 @@ import traceback
 
 
 def _report_path():
-    base = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.getcwd()
+    from core.platform_util import report_dir
+    base = report_dir()
     try:
         test = os.path.join(base, ".write_test")
         open(test, "w").close()

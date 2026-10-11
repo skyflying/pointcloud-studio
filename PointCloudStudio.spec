@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Build:  pyinstaller PointCloudStudio.spec --noconfirm
-# Output: dist/PointCloudStudio/PointCloudStudio(.exe)   (one-folder build: fast start-up)
+# Output: Windows  dist/PointCloudStudio/PointCloudStudio.exe   (one-folder build: fast start-up)
+#         macOS    dist/PointCloudStudio.app                   (build on a Mac: build_mac.sh)
 import os
 import sys
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
@@ -136,25 +137,69 @@ a.datas = [d for d in a.datas if not any(x in d[0] for x in ("qml/", "qml\\"))]
 
 pyz = PYZ(a.pure)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name="PointCloudStudio",
-    console=False,                       # GUI app: no console window
-    icon="ui/assets/app.ico",
-    upx=False,
-)
-# Same program with a console window: shows start-up messages and errors (troubleshooting).
-exe_debug = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name="PointCloudStudio_debug",
-    console=True,
-    icon="ui/assets/app.ico",
-    upx=False,
-)
-coll = COLLECT(exe, exe_debug, a.binaries, a.datas, strip=False, upx=False, name="PointCloudStudio")
+if sys.platform == "darwin":
+    # ---- macOS: one .app bundle. No separate debug executable — start-up messages appear when the
+    # app is run from Terminal:  dist/PointCloudStudio.app/Contents/MacOS/PointCloudStudio
+    sys.path.insert(0, os.path.abspath("."))
+    from core.version import __version__ as _app_version
+
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name="PointCloudStudio",
+        console=False,
+        argv_emulation=False,            # files opened from Finder are handled via QFileOpenEvent
+        target_arch=None,                # = architecture of the Python used (arm64 or x86_64)
+        icon="ui/assets/app.icns",
+        upx=False,
+    )
+    coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="PointCloudStudio")
+    _doc_types = [
+        {"CFBundleTypeName": "Point cloud", "CFBundleTypeRole": "Editor", "LSHandlerRank": "Alternate",
+         "CFBundleTypeExtensions": ["las", "laz", "xyz", "asc", "pts"]},
+        {"CFBundleTypeName": "PointCloud Studio project", "CFBundleTypeRole": "Editor", "LSHandlerRank": "Owner",
+         "CFBundleTypeExtensions": ["pcsproj"]},
+    ]
+    app = BUNDLE(
+        coll,
+        name="PointCloudStudio.app",
+        icon="ui/assets/app.icns",
+        bundle_identifier="io.github.skyflying.pointcloudstudio",
+        version=_app_version,
+        info_plist={
+            "CFBundleName": "PointCloud Studio",
+            "CFBundleDisplayName": "PointCloud Studio",
+            "CFBundleShortVersionString": _app_version,
+            "CFBundleVersion": _app_version,
+            "NSHighResolutionCapable": True,          # Retina rendering
+            "NSRequiresAquaSystemAppearance": False,  # allow dark title bar
+            "LSMinimumSystemVersion": "11.0",
+            "LSApplicationCategoryType": "public.app-category.productivity",
+            "CFBundleDocumentTypes": _doc_types,
+        },
+    )
+else:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name="PointCloudStudio",
+        console=False,                       # GUI app: no console window
+        icon="ui/assets/app.ico",
+        upx=False,
+    )
+    # Same program with a console window: shows start-up messages and errors (troubleshooting).
+    exe_debug = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name="PointCloudStudio_debug",
+        console=True,
+        icon="ui/assets/app.ico",
+        upx=False,
+    )
+    coll = COLLECT(exe, exe_debug, a.binaries, a.datas, strip=False, upx=False, name="PointCloudStudio")

@@ -149,10 +149,16 @@ def apply_theme(app):
         p.setColor(QPalette.Disabled, role, QColor(C["muted_dim"]))
     app.setPalette(p)
 
-    font = QFont()
-    font.setFamilies(["Segoe UI Variable", "Segoe UI", "Inter", "SF Pro Text",
-                      "Noto Sans", "Helvetica Neue", "Arial"])
-    font.setPointSize(10)
+    if sys.platform == "darwin":
+        # macOS: system font (San Francisco). Points are 1 px at 72 dpi there, so 13 pt matches
+        # the 10 pt Segoe UI used on Windows (96 dpi); 10 pt would look tiny.
+        from PySide6.QtGui import QFontDatabase
+        font = QFontDatabase.systemFont(QFontDatabase.GeneralFont)
+        font.setPointSize(13)
+    else:
+        font = QFont()
+        font.setFamilies(["Segoe UI Variable", "Segoe UI", "Inter", "Noto Sans", "Helvetica Neue", "Arial"])
+        font.setPointSize(10)
     app.setFont(font)
     app.setStyleSheet(QSS.format(assets=_ASSETS, sel=SELECTION_HEX, **C))
 

@@ -3,7 +3,8 @@
 Usage:  PointCloudStudio [file] [--software-gl] [--selftest [--quiet]] [--diagnose]
 
 Start-up is defensive because a windowed .exe has no console:
-  * every stage is logged to %LOCALAPPDATA%\\PointCloudStudio\\startup.log (native crashes too, via faulthandler)
+  * every stage is logged to startup.log (native crashes too, via faulthandler) in
+    %LOCALAPPDATA%\\PointCloudStudio (Windows) or ~/Library/Application Support/PointCloudStudio (macOS)
   * a splash screen appears before the heavy libraries load
   * if the previous start never completed (e.g. a graphics-driver crash), this start uses
     Qt's software OpenGL automatically; --software-gl forces it
@@ -21,13 +22,8 @@ sys.path.insert(0, APP_DIR)
 
 # ------------------------------------------------------------------ logging / crash capture
 def _data_dir():
-    base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), ".local", "share")
-    d = os.path.join(base, "PointCloudStudio")
-    try:
-        os.makedirs(d, exist_ok=True)
-        return d
-    except OSError:
-        return tempfile.gettempdir()
+    from core.platform_util import app_data_dir
+    return app_data_dir()
 
 
 DATA_DIR = _data_dir()
@@ -186,6 +182,25 @@ def _say(splash, app, text):
         app.processEvents()
 
 
+def _install_file_open_handler(app, win):
+    """macOS: files opened from Finder (double-click, "Open With", drop on the Dock icon) arrive
+    as QFileOpenEvent instead of command-line arguments."""
+    from PySide6.QtCore import QEvent, QObject
+
+    class _FileOpenFilter(QObject):
+        def eventFilter(self, obj, event):
+            if event.type() == QEvent.FileOpen:
+                path = event.file()
+                if path:
+                    log(f"File open event: {path}")
+                    win.load_path(path)
+                return True
+            return False
+
+    app._file_open_filter = _FileOpenFilter(app)     # keep a reference
+    app.installEventFilter(app._file_open_filter)
+
+
 # ------------------------------------------------------------------ main
 def main():
     import platform
@@ -193,7 +208,13 @@ def main():
         f"· {platform.platform()} · args={sys.argv[1:]}")
 
     software = "--software-gl" in sys.argv or os.environ.get("QT_OPENGL", "").lower() == "software"
-    if os.path.exists(MARKER) and not software and "--selftest" not in sys.argv:
+    if sys.platform == "darwin":
+        # macOS always provides OpenGL 2.1 (Apple's own renderer) and Qt has no software-GL switch
+        # there, so the Windows fallback does not apply.
+        if software:
+            log("--software-gl / QT_OPENGL=software ignored on macOS")
+        software = False
+    elif os.path.exists(MARKER) and not software and "--selftest" not in sys.argv:
         software = True
         log("Previous start did not complete → using software OpenGL this time")
     if software:
@@ -298,9 +319,11 @@ def main():
         log("Start-up complete")
 
     QTimer.singleShot(2500, _started)       # survive the first frames before declaring success
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    args = [a for a in sys.argv[1:] if not a.startswith("--") and not a.startswith("-psn_")]
     if args:
         win.load_path(args[0])
+    if sys.platform == "darwin":
+        _install_file_open_handler(app, win)
     return app.exec()
 
 
