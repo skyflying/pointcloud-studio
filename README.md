@@ -158,14 +158,64 @@ pointcloud-studio/
 
 ## Version history
 
-- **0.1.12** — Point classification (SMRF / PMF / CSF / grid minimum ground filters, vegetation and buildings); KP / Chainage label
-- **0.1.11** — Selectable reject class (7 / 18 / custom); TIN / DEM from selected classes; bulking and shrinkage factors in earthworks design
-- **0.1.10** — Data stored as depths (import option, flip, export as depth); Topo-bathy palette and 0 m line; neutral filter wording
-- **0.1.9** — Earthworks design and volumes for land data: every level as elevation or depth; neutral cut / fill wording
-- **0.1.8** — Drawing from any viewing angle (terrain-aware picking, draped lines); Drawings in the Data panel; contour labels in 3D; closable Navigation panel
-- **0.1.7** — DXF contour depth labels; GitHub Actions Windows build
-- **0.1.6** — Contours (Shapefile PolyLineZ, DXF 3D polylines)
-- **0.1.5** — Projects and coordinate systems, Subset editor and Class 7, automatic filters, cable routes and KP, volumes and multi-epoch comparison, earthworks design (dredge / fill, cable trench), slope maps
+### Releases
+
+#### 0.1.12
+- **Added** — Point classification (*Edit → Classify Points*, Ctrl+K): four ground filters — SMRF (Pingel 2013), PMF (Zhang 2003), CSF cloth simulation (Zhang 2016), grid minimum — followed by vegetation by height above ground (classes 3 / 4 / 5) and buildings by roof flatness, including walls (class 6). Scope (all / selection / subset), "only unclassified points", one undo step for the whole run; works for clouds without a classification field.
+- **Added** — *View → Distance Label*: KP (cables, offshore pipelines) or Chainage (roads, land pipelines) for sections, cursor, route labels, subset status and trench tables.
+- **Added** — Self-test check for land-data classification.
+- **Changed** — Grid-minimum ground filter allows for the local slope (steep terrain is no longer removed).
+
+#### 0.1.11
+- **Added** — Selectable reject class: 7 (low noise), 18 (high noise) or a custom class; all of them are treated as rejected (hidden, shown on request, *Accept* restores the original class). Classes above 31 are refused for LAS point formats 0–5.
+- **Added** — *Create TIN / DEM* from selected classes only (e.g. ground, class 2); available classes and counts are listed.
+- **Added** — Bulking and shrinkage factors in earthworks design: loose cut volume, material needed for the fill, cut / fill balance (also in the CSV report).
+
+#### 0.1.10
+- **Added** — Files that store depths (down +): XYZ import option "Z values are: Depth", *Data → Z values are depths (flip sign)* for any cloud or grid, text export "Write Z as depth"; saved in the project.
+- **Added** — Topo-bathy palette for land–sea data (blues below 0 m, greens / browns above, sharp break at 0 m), chosen automatically when the data spans 0 m; highlighted 0 m contour (DXF layer `CONTOUR_ZERO`, SHP type `zero`).
+- **Changed** — Filter wording for land and sea ("upper / lower side", MBES and LiDAR).
+
+#### 0.1.9
+- **Changed** — Earthworks design and volume base levels work for land data: every level field can be given as elevation (Z, up) or depth (down +), independent of the display mode, with automatic conversion and the existing surface's range as a hint.
+- **Changed** — Neutral wording: *Cut / fill* (dredge, excavate, level, fill / embank), *Over-cut*, *Trench* (seabed or ground).
+
+#### 0.1.8
+- **Added** — *Drawings* in the Data panel: every section, the volume / dredge polygon, the subset box and reviewed areas can be shown or hidden; the polygon is saved in the project.
+- **Added** — Depth / elevation labels on contours in the 3D view.
+- **Added** — The *Navigation* help panel can be closed (✕ or *View → Navigation Help*).
+- **Changed** — Section mode no longer switches to top view. Clicks are traced onto the visible terrain, so drawing is accurate from any viewing angle, and drawn lines follow the terrain.
+
+#### 0.1.7
+- **Added** — Depth / elevation labels in DXF contour exports (layer `CONTOUR_LABEL`, placed at the contour elevation, rotated along the line and kept upright).
+- **Added** — GitHub Actions workflow: Windows build, self-test and release zip on every version tag.
+
+#### 0.1.6
+- **Added** — Contours from DEM / TIN (interval, base, major contours, smoothing, simplification, minimum length); export to Shapefile PolyLineZ (ELEV / DEPTH / TYPE) and DXF R12 3D polylines.
+
+#### 0.1.5 — first numbered release
+- **Added** — Earthworks design: dredge / fill to a design level with over-dredge allowance and side slopes 1 : n; cable trench along a route (bottom width, depth of lowering, side slopes) with excavation per KP interval; design and cut / fill layers, CSV report, GeoTIFF.
+- **Added** — Slope map with statistics (mean, 95 %, maximum, area above thresholds); local slope at the profile cursor.
+- **Changed** — Version numbering restarted at 0.1.5 (earlier internal builds were numbered 1.0.0–1.5.0, see below).
+
+### Development builds before 0.1.5
+These internal builds used the numbers 1.0.0–1.5.0 before the public version line was started at 0.1.5.
+
+- **1.5.0** — Volume / difference between surfaces or against a base level (whole overlap, route corridor, subset box, polygon); coverage check and warning for data gaps; Δ layer, CSV report, Δ GeoTIFF; point cloud to surface deviation; multi-epoch section profiles. *Fixed:* projects with a Δ layer could not be saved; overlapping text in the volume results.
+- **1.4.0** — Cable routes from RPL CSV / TXT and Shapefiles (EPSG required at import, automatic column detection, KP in km or m); sections with the KP from the route file; subsets paged along a route; subset length control. *Fixed:* the section profile and subset editor no longer force a window wider than the screen (they share the bottom area as tabs; both fit 1366 × 768).
+- **1.3.0** — Automatic noise filters (grid median, reference surface, SOR, radius, range) with preview; results become a selection for review.
+- **1.2.0** — Subset editor in the style of BASE Editor (oriented box, side / end views, paging, reviewed-area tracking); reject as LAS class 7 with *Accept*; export option to exclude rejected points; compact toolbar.
+- **1.1.0** — Projects: several point clouds, DEMs and TINs; EPSG coordinate systems with automatic reprojection; DEM import (GeoTIFF, ESRI ASCII, XYZ grid); Data panel; automatic edit lock with several clouds; project files (`.pcsproj`). *Fixed:* LAS files with empty RGB fields were drawn black; long file names widened the side panel.
+- **1.0.9** — Build script also finds Python installed by the Python Install Manager.
+- **1.0.8** — Build refuses Anaconda / Miniconda Python (the cause of "DLL load failed while importing QtCore"), prefers python.org Python, and no longer bundles outdated Windows runtime files.
+- **1.0.7** — `check_env.bat`: environment report comparing Qt from source and from the packaged program, with all runtime DLL versions.
+- **1.0.6** — Clear error message when Qt cannot be loaded; runtime DLL versions in the start-up log; Microsoft C++ runtime taken from PySide6.
+- **1.0.5** — Splash screen, start-up log with crash capture, automatic software-OpenGL fallback after a failed start, `PointCloudStudio_debug.exe` with a console window.
+- **1.0.4** — The build script removes the intermediate `build` folder and opens `dist` (running the program from `build` failed with "Failed to load Python DLL").
+- **1.0.3** — Packaging guards against mismatched Qt libraries; start-up diagnostics (`--diagnose`) and a readable error report instead of a crash.
+- **1.0.2** — Colour bar redesign: fixed scale with draggable display-range handles; the build script isolates PATH.
+- **1.0.1** — Simplified About dialog; more robust detection of Python in the build script.
+- **1.0.0** — First integrated version: XYZ / ASC / LAS / LAZ import with column mapping and encoding detection; 3D view with colour modes; pick / box / lasso selection with point information; delete to trash with restore and undo / redo; export to LAS / LAZ / text with EPSG; interactive colour bar; TIN and DEM including the shoalest-depth (SDTP) method; cross-section profiles with measurement; packaging and self-test.
 
 ---
 
