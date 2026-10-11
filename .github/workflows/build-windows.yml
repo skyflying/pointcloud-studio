@@ -1,6 +1,6 @@
 # Builds the Windows app on GitHub's Windows runners.
 #  - Manual run:  Actions tab → "Build Windows" → Run workflow   → download the artifact
-#  - Release:     push a tag like v0.1.12                          → zip attached to a GitHub Release
+#  - Release:     push a tag like v0.1.7                          → zip attached to a GitHub Release
 name: Build Windows
 
 on:
