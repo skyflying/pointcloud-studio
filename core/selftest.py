@@ -32,6 +32,7 @@ def run(app=None):
     lines = [f"{APP_NAME} {__version__} self-test", f"frozen: {getattr(sys, 'frozen', False)}",
              f"python: {sys.version.split()[0]}", ""]
     ok_all = True
+    skipped = []
     tmp = tempfile.mkdtemp(prefix="pcs_selftest_")
     ctx = {}
 
@@ -42,6 +43,15 @@ def run(app=None):
             info = fn()
             lines.append(f"[PASS] {name:<34} {time.perf_counter() - t:6.2f}s  {info or ''}")
         except Exception as e:
+            # an optional module that is not installed (e.g. rasterio, lazrs) → that feature is
+            # unavailable in this build: SKIP, not FAIL
+            from core.deps import module_from_error, package_for_module
+            mod = module_from_error(e)
+            pkg = package_for_module(mod) if mod else None
+            if pkg is not None and not pkg[2]:
+                skipped.append(pkg[1])
+                lines.append(f"[SKIP] {name:<34} optional module '{pkg[1]}' not installed ({pkg[3]})")
+                return
             ok_all = False
             lines.append(f"[FAIL] {name:<34} {type(e).__name__}: {e}")
             lines.append("       " + traceback.format_exc().replace("\n", "\n       "))
@@ -58,15 +68,17 @@ def run(app=None):
         las = laspy.LasData(h)
         las.x, las.y, las.z = x, y, z
         las.intensity = (rng.random(n) * 1000).astype(np.uint16)
-        path = os.path.join(tmp, "t.laz")
+        import importlib.util
+        has_lazrs = importlib.util.find_spec("lazrs") is not None
+        path = os.path.join(tmp, "t.laz" if has_lazrs else "t.las")   # later steps still run without lazrs
         las.write(path)
         ctx["laz"] = path
-        return f"{n:,} points"
+        return f"{n:,} points" + ("" if has_lazrs else " (LAS — lazrs not installed, LAZ not tested)")
 
     def read_laz():
         from fileio.las_reader import read_las
         ctx["pc"] = read_las(ctx["laz"])
-        return f"{len(ctx['pc']):,} points (lazrs)"
+        return f"{len(ctx['pc']):,} points" + (" (lazrs)" if ctx["laz"].endswith(".laz") else " (LAS)")
 
     def text_roundtrip():
         from fileio.writers import export
@@ -128,15 +140,19 @@ def run(app=None):
         from fileio.writers import export
         pc = ctx["pc"]
         idx = np.arange(0, 600)
+        import importlib.util
+        fmt = "laz" if importlib.util.find_spec("lazrs") is not None else "las"
         cmd = ClassifyCommand(pc, idx, 7)
         cmd.do()
-        assert pc.n_noise == 600
-        p = os.path.join(tmp, "c7.laz")
-        export(pc, np.flatnonzero(pc.deleted_batch == 0), p, "laz", {})
-        n7 = int((np.array(laspy.read(p).classification) == 7).sum())
-        cmd.undo()
+        try:                                   # always undo, so later steps see the original cloud
+            assert pc.n_noise == 600
+            p = os.path.join(tmp, "c7." + fmt)
+            export(pc, np.flatnonzero(pc.deleted_batch == 0), p, fmt, {})
+            n7 = int((np.array(laspy.read(p).classification) == 7).sum())
+        finally:
+            cmd.undo()
         assert n7 == 600 and pc.n_noise == 0
-        return "600 points → Class 7 → LAZ → read back"
+        return f"600 points → Class 7 → {fmt.upper()} → read back"
 
     def auto_filter():
         from core import filters
@@ -313,7 +329,10 @@ def run(app=None):
                      ("project save / open", project_roundtrip), ("3D render (VisPy/OpenGL)", render)):
         step(name, fn)
 
-    lines += ["", "RESULT: " + ("ALL PASSED" if ok_all else "FAILED")]
+    result = "FAILED" if not ok_all else ("PASSED" if skipped else "ALL PASSED")
+    if ok_all and skipped:
+        result += f" — {len(skipped)} step(s) skipped, optional modules not installed: {', '.join(sorted(set(skipped)))}"
+    lines += ["", "RESULT: " + result]
     text = "\n".join(lines)
     path = _report_path()
     with open(path, "w", encoding="utf-8") as f:

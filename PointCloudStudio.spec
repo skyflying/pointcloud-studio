@@ -14,12 +14,34 @@ if os.path.isdir(os.path.join(sys.base_prefix, "conda-meta")) and not os.environ
                      f"({sys.base_prefix}).\n*** Install Python 3.12 64-bit from python.org and run "
                      "build_windows.bat again (set ALLOW_CONDA=1 to override at your own risk).\n")
 
-datas = [("ui/assets", "ui/assets")]
-datas += collect_data_files("vispy")        # GLSL shaders, fonts, colormaps
-datas += collect_data_files("pyproj")       # proj.db (EPSG definitions)
-datas += collect_data_files("rasterio")     # bundled GDAL / PROJ data
+# Optional packages (lazrs, pyproj, rasterio, pyshp, contourpy) may be missing on a build machine:
+# collect them only if installed, so the build still succeeds (those features are then unavailable).
+import importlib.util as _iu
 
-binaries = collect_dynamic_libs("lazrs")    # LAZ codec (Rust extension)
+
+def _have(pkg):
+    try:
+        return _iu.find_spec(pkg) is not None
+    except Exception:
+        return False
+
+
+_missing_optional = [p for p in ("lazrs", "pyproj", "rasterio", "shapefile", "contourpy") if not _have(p)]
+if _missing_optional:
+    print("*** NOTE: optional packages not installed, related features will be unavailable:",
+          ", ".join(_missing_optional))
+
+
+def _safe(fn, pkg):
+    return fn(pkg) if _have(pkg) else []
+
+
+datas = [("ui/assets", "ui/assets")]
+datas += collect_data_files("vispy")               # GLSL shaders, fonts, colormaps
+datas += _safe(collect_data_files, "pyproj")       # proj.db (EPSG definitions)
+datas += _safe(collect_data_files, "rasterio")     # bundled GDAL / PROJ data
+
+binaries = _safe(collect_dynamic_libs, "lazrs")    # LAZ codec (Rust extension)
 
 # Qt's software OpenGL renderer (Mesa llvmpipe) — used by the automatic fallback / --software-gl
 # when a graphics driver cannot provide OpenGL 2.1 (old drivers, remote desktop, VMs).
@@ -32,7 +54,7 @@ if sys.platform == "win32":
         binaries.append((_f, "PySide6"))
 
 hiddenimports = (
-    collect_submodules("rasterio")
+    _safe(collect_submodules, "rasterio")
     + collect_submodules("vispy.app.backends")
     + collect_submodules("vispy.visuals")
     + ["shapefile",                 # pyshp (route import / contour export)
@@ -162,6 +184,43 @@ if sys.platform == "darwin":
         {"CFBundleTypeName": "PointCloud Studio project", "CFBundleTypeRole": "Editor", "LSHandlerRank": "Owner",
          "CFBundleTypeExtensions": ["pcsproj"]},
     ]
+    def _min_macos(binaries):
+        """Highest minimum-macOS version among the bundled libraries (LC_BUILD_VERSION minos /
+        LC_VERSION_MIN_MACOSX). Wheels built for newer macOS (e.g. numpy/scipy built for macOS 14)
+        raise the app's real minimum; Info.plist must state it so older Macs get a clear message
+        instead of a crash. Read with macholib (installed with PyInstaller on macOS) — `otool`
+        would need the Xcode Command Line Tools."""
+        try:
+            from macholib.mach_o import LC_BUILD_VERSION, LC_VERSION_MIN_MACOSX
+            from macholib.MachO import MachO
+        except Exception as e:  # noqa: BLE001
+            print(f"*** NOTE: macholib unavailable ({e}) — minimum macOS left at 11.0")
+            return "11.0"
+        best, worst_lib = (11, 0), None
+        for entry in list(binaries) + [(None, os.path.abspath(sys.executable), None)]:
+            src = entry[1]
+            if not src or not os.path.isfile(src):
+                continue
+            try:
+                headers = MachO(src).headers
+            except Exception:  # noqa: BLE001  (not a Mach-O file)
+                continue
+            for h in headers:
+                for lc, cmd, _data in h.commands:
+                    if lc.cmd == LC_BUILD_VERSION and getattr(cmd, "platform", 1) == 1:   # 1 = macOS
+                        raw = cmd.minos
+                    elif lc.cmd == LC_VERSION_MIN_MACOSX:
+                        raw = cmd.version
+                    else:
+                        continue
+                    v = (raw >> 16, (raw >> 8) & 0xFF)
+                    if v > best:
+                        best, worst_lib = v, os.path.basename(src)
+        print(f"Minimum macOS for this build: {best[0]}.{best[1]}"
+              + (f"  (set by {worst_lib})" if worst_lib else ""))
+        return f"{best[0]}.{best[1]}"
+
+    _min_os = _min_macos(a.binaries)
     app = BUNDLE(
         coll,
         name="PointCloudStudio.app",
@@ -175,7 +234,7 @@ if sys.platform == "darwin":
             "CFBundleVersion": _app_version,
             "NSHighResolutionCapable": True,          # Retina rendering
             "NSRequiresAquaSystemAppearance": False,  # allow dark title bar
-            "LSMinimumSystemVersion": "11.0",
+            "LSMinimumSystemVersion": _min_os,   # from the bundled libraries, see _min_macos
             "LSApplicationCategoryType": "public.app-category.productivity",
             "CFBundleDocumentTypes": _doc_types,
         },

@@ -28,7 +28,9 @@ def _data_dir():
 
 DATA_DIR = _data_dir()
 LOG_PATH = os.path.join(DATA_DIR, "startup.log")
-MARKER = os.path.join(DATA_DIR, "startup_in_progress")
+from core.platform_util import startup_marker  # noqa: E402
+
+MARKER = startup_marker()
 try:
     _log_file = open(LOG_PATH, "w", encoding="utf-8", buffering=1)
 except OSError:
@@ -94,6 +96,15 @@ def _excepthook(tp, val, tb):
         if qt_ok:
             from PySide6.QtWidgets import QApplication, QMessageBox
             qt_ok = QApplication.instance() is not None
+        if qt_ok:
+            try:
+                from core.deps import module_from_error
+                from ui.deps_dialog import missing_module_box
+                mod = module_from_error(val)
+                if mod and missing_module_box(mod, QApplication.activeWindow()):
+                    return
+            except Exception:
+                pass
         if qt_ok:
             box = QMessageBox(QMessageBox.Critical, "PointCloud Studio — error",
                               f"{tp.__name__}: {val}\n\nDetails were saved to:\n{LOG_PATH}")
@@ -182,23 +193,87 @@ def _say(splash, app, text):
         app.processEvents()
 
 
-def _install_file_open_handler(app, win):
-    """macOS: files opened from Finder (double-click, "Open With", drop on the Dock icon) arrive
-    as QFileOpenEvent instead of command-line arguments."""
-    from PySide6.QtCore import QEvent, QObject
-
-    class _FileOpenFilter(QObject):
-        def eventFilter(self, obj, event):
-            if event.type() == QEvent.FileOpen:
-                path = event.file()
-                if path:
-                    log(f"File open event: {path}")
-                    win.load_path(path)
-                return True
+def _ensure_qt_installed():
+    """Running from source without PySide6: no window can be shown, so ask in the terminal.
+    Returns True when Qt is importable (start-up continues)."""
+    from core import deps
+    miss = deps.quick_missing()
+    if not any(p[0] == "PySide6" for p in miss):
+        return True
+    text = deps.summary(miss)
+    log("Qt (PySide6) is not installed\n" + text)
+    print("\nPointCloud Studio cannot start:\n" + text)
+    hint = ("bash setup_mac.sh" if sys.platform == "darwin" else
+            f"{os.path.basename(sys.executable)} core/deps.py install")
+    if deps.externally_managed():
+        print(f"\nThis Python does not allow installing packages outside a virtual environment.\nRun:  {hint}")
+        _native_box("PointCloud Studio — cannot start", text + f"\n\nRun:  {hint}")
+        return False
+    interactive = sys.stdin is not None and sys.stdin.isatty()
+    if interactive:
+        try:
+            ans = input("\nInstall the missing modules now? [Y/n] ").strip().lower()
+        except EOFError:
+            ans = "n"
+        if ans in ("", "y", "yes"):
+            failed = deps.install(miss, echo=print)
+            if not any(p[2] for p in failed):
+                print("\nModules installed — restarting…\n")
+                _clear_marker()                       # a restart is not a failed start
+                args = [sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:]
+                if sys.platform == "win32":
+                    import subprocess
+                    subprocess.Popen(args)
+                    return False
+                os.execv(sys.executable, args)
+            print("\n" + deps.summary(failed))
             return False
+    print(f"\nInstall them with:  {hint}")
+    _native_box("PointCloud Studio — cannot start", text + f"\n\nInstall them with:  {hint}")
+    return False
 
-    app._file_open_filter = _FileOpenFilter(app)     # keep a reference
-    app.installEventFilter(app._file_open_filter)
+
+class _FileOpenHandler:
+    """macOS: files opened from Finder (double-click, "Open With", drop on the Dock icon) arrive as
+    QFileOpenEvent, not as arguments. The handler is installed right after QApplication exists —
+    the launch event can be delivered by any processEvents() during start-up (splash screen,
+    module dialog) — and keeps the paths until the main window is ready."""
+
+    def __init__(self, app):
+        from PySide6.QtCore import QEvent, QObject
+
+        handler = self
+
+        class _Filter(QObject):
+            def eventFilter(self, obj, event):
+                if event.type() == QEvent.FileOpen:
+                    if event.file():
+                        log(f"File open event: {event.file()}")
+                        handler.open(event.file())
+                    return True
+                return False
+
+        self.win = None
+        self.pending = []
+        self._filter = _Filter(app)
+        app.installEventFilter(self._filter)
+
+    def open(self, path):
+        if self.win is None:
+            self.pending.append(path)
+            return
+        w = self.win
+        busy = (getattr(w, "_thread", None) is not None and w._thread.isRunning()) or bool(w._load_queue)
+        if busy:
+            w._load_queue.append(path)       # added to the project after the current load
+        else:
+            w.load_path(path)
+
+    def attach(self, win):
+        self.win = win
+        paths, self.pending = self.pending, []
+        for p in paths:                          # first file opens (if idle), the rest are queued and added
+            self.open(p)
 
 
 # ------------------------------------------------------------------ main
@@ -226,6 +301,9 @@ def main():
         pass
 
     _log_msvc_runtime()
+    if not getattr(sys, "frozen", False) and not _ensure_qt_installed():
+        _clear_marker()
+        return 3
     log("Importing Qt…")
     try:
         from PySide6.QtCore import QCoreApplication, Qt, QTimer
@@ -254,8 +332,17 @@ def main():
     app.setApplicationVersion(__version__)
     app.setWindowIcon(QIcon(os.path.join(APP_DIR, "ui", "assets", "app.png")))
     app.aboutToQuit.connect(_clear_marker)
+    file_open = _FileOpenHandler(app) if sys.platform == "darwin" else None
     from PySide6.QtCore import qVersion
     log(f"Qt {qVersion()} application created (software GL: {software})")
+
+    if not getattr(sys, "frozen", False) and "--selftest" not in sys.argv and "--diagnose" not in sys.argv:
+        from ui.theme import apply_theme as _theme
+        _theme(app)
+        from ui.deps_dialog import startup_check
+        if not startup_check(log):
+            _clear_marker()
+            return 3
 
     if "--diagnose" in sys.argv:
         from core.diagnostics import report, write_report
@@ -322,8 +409,8 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--") and not a.startswith("-psn_")]
     if args:
         win.load_path(args[0])
-    if sys.platform == "darwin":
-        _install_file_open_handler(app, win)
+    if file_open is not None:
+        file_open.attach(win)
     return app.exec()
 
 

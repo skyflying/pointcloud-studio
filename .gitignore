@@ -44,3 +44,4 @@ startup_error.txt
 # macOS build
 .venv-build/
 *.dmg
+PointCloud Studio.command

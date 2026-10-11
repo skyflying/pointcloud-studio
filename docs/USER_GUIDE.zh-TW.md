@@ -13,7 +13,7 @@
 
 ## 下載 macOS 版
 到 **Releases** 頁面下載 DMG：Apple Silicon（M 系列晶片）選 `…-macos-arm64.dmg`，Intel Mac 選 `…-macos-x86_64.dmg`
-（需 macOS 11 以上）。打開 DMG 後，把 PointCloudStudio 拖進「應用程式」資料夾。
+（最低 macOS 版本取決於打包時使用的函式庫；Mac 版本太舊時，打開 App 會顯示需要的版本，這時請改在該台 Mac 上用 `bash build_mac.sh` 自行打包）。打開 DMG 後，把 PointCloudStudio 拖進「應用程式」資料夾。
 
 程式沒有 Apple 開發者簽章，第一次開啟會被擋下（顯示「無法打開」或「已損毀」）。請在 App 上按右鍵 →「打開」→「打開」，
 或在「終端機」執行一次：
@@ -27,6 +27,16 @@ Mac 操作差異：快捷鍵的 Ctrl 改為 ⌘（Command），鍵盤上的 dele
 ```
 pip install -r requirements.txt
 ```
+
+**macOS 一鍵安裝**：在「終端機」進入專案資料夾執行 `bash setup_mac.sh`。它會檢查 Mac 環境、尋找合適的 Python 3.10–3.13
+（找不到時可自動下載安裝 python.org 的 Python 3.12；macOS 內建的 python3 是 3.9，版本太舊），建立 `.venv`，
+再逐一安裝缺少的模組：優先使用預先編譯好的套件，沒有時才從原始碼編譯（需要時會提示安裝 Apple Command Line Tools）。
+某個選用模組裝不起來不會中斷其他模組。完成後產生 **`PointCloud Studio.command`**，在 Finder 雙擊即可啟動。
+之後隨時可以再執行一次，只會補裝缺少的部分。
+
+任何平台都可以用 `python core/deps.py check` 檢查、`python core/deps.py install` 補裝模組。
+從原始碼啟動時若缺少模組，程式會列出並提供「Install」一鍵安裝（完成後重新啟動）；
+使用到缺少選用模組的功能時（例如沒有 rasterio 卻匯出 GeoTIFF），也會跳出同樣的安裝視窗。
 
 ## 執行
 ```
@@ -133,7 +143,7 @@ python main.py 檔案.laz      # 直接載入
 ## 打包成執行檔
 請見英文 README 的「Building a standalone executable」：執行 `build_windows.bat`（需 python.org 版 Python，不可使用 Anaconda）；
 程式無法啟動時查看 `%LOCALAPPDATA%\\PointCloudStudio\\startup.log` 或執行 `check_env.bat`。（Windows：雙擊 build_windows.bat）。打包後可用 `--selftest` 驗證。
-macOS：在專案資料夾執行 `./build_mac.sh`（同樣需 python.org 版 Python），產生 `dist/PointCloudStudio.app` 與 DMG；
+macOS：在專案資料夾執行 `bash build_mac.sh`（同樣需 python.org 版 Python），產生 `dist/PointCloudStudio.app` 與 DMG；
 啟動記錄與報告位於 `~/Library/Application Support/PointCloudStudio/`。
 
 ## 專案架構（多份資料、座標系統）

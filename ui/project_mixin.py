@@ -872,7 +872,13 @@ class ProjectFileMixin:
         try:
             doc = project_io.read_project(path)
         except Exception as e:  # noqa: BLE001
-            QMessageBox.critical(self, "Cannot open project", f"{type(e).__name__}: {e}")
+            from core.deps import module_from_error
+            mod = module_from_error(e)
+            if mod:
+                from ui.deps_dialog import missing_module_box
+                missing_module_box(mod, self)
+            else:
+                QMessageBox.critical(self, "Cannot open project", f"{type(e).__name__}: {e}")
             return
         sources, skipped = {}, []
         for e in doc["datasets"]:

@@ -567,6 +567,12 @@ class MainWindow(ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteM
         self.statusBar().showMessage("Failed")
         title = "Export failed" if getattr(self, "_exporting", False) else "Load failed"
         self._exporting = False
+        from core.deps import module_from_error
+        mod = module_from_error(msg)
+        if mod:
+            from ui.deps_dialog import missing_module_box
+            if missing_module_box(mod, self):
+                return
         box = QMessageBox(QMessageBox.Critical, title, msg.split("\n\n")[0], parent=self)
         box.setDetailedText(msg)
         box.exec()

@@ -75,7 +75,7 @@ A desktop application for viewing, cleaning, and analysing point cloud data from
 
 ## Requirements
 
-- Windows 10/11, or macOS 11 (Big Sur) or later on Apple Silicon or Intel
+- Windows 10/11, or macOS on Apple Silicon or Intel: macOS 11 (Big Sur) or later to run from source; a built app needs the macOS version of the newest library inside it — `build_mac.sh` prints it and macOS shows it if the Mac is too old (builds made on a recent Mac typically need macOS 13–14; build on the older Mac to support it)
 - Python 3.10–3.13 from python.org ([Windows](https://www.python.org/downloads/windows/) · [macOS](https://www.python.org/downloads/macos/)) — **not Anaconda** (Anaconda's own Qt conflicts with PySide6)
 - Python packages listed in `requirements.txt`
 
@@ -95,6 +95,10 @@ venv\Scripts\activate          # Windows
 
 pip install -r requirements.txt
 ```
+
+**macOS — one step:** run `bash setup_mac.sh` in Terminal instead. It checks the Mac, finds a suitable Python 3.10–3.13 (or offers to install Python 3.12 from python.org — the `python3` that comes with macOS is 3.9 and too old), creates `.venv`, and installs every missing module one by one: pre-built packages first, compiling only when there is no pre-built one (offering Apple's Command Line Tools if that is needed). A failing optional module does not stop the rest. It then creates **`PointCloud Studio.command`**, which starts the program with a double-click. Run it again at any time — only what is missing is installed.
+
+Check or repair the modules on any platform with `python core/deps.py check` / `python core/deps.py install`. When the program is started from source and modules are missing, it lists them and offers to install them (then restarts); a feature that needs a missing optional module (e.g. GeoTIFF export without `rasterio`) offers the same.
 
 ---
 
@@ -126,7 +130,7 @@ On Windows, run **`build_windows.bat`** in the project folder. It finds a python
 
 If the program does not start, see `%LOCALAPPDATA%\PointCloudStudio\startup.log`, or run **`check_env.bat`** for a report of the Python / Qt / DLL environment.
 
-On macOS, run **`./build_mac.sh`** in the project folder. It uses a python.org Python, creates a clean virtual environment, builds `dist/PointCloudStudio.app`, runs the self-test and packs `dist/PointCloudStudio-<version>-macos-<arch>.dmg`. The app is built for the architecture of the Python used (arm64 on Apple Silicon, x86_64 on Intel). Start-up log and reports: `~/Library/Application Support/PointCloudStudio/`. To see start-up messages, run `PointCloudStudio.app/Contents/MacOS/PointCloudStudio` from Terminal.
+On macOS, run **`bash build_mac.sh`** in Terminal in the project folder. It runs the same checks as `setup_mac.sh` (Python, network, certificates, missing modules with retry), creates a clean virtual environment, builds `dist/PointCloudStudio.app`, runs the self-test and packs `dist/PointCloudStudio-<version>-macos-<arch>.dmg`. The app is built for the architecture of the Python used (arm64 on Apple Silicon, x86_64 on Intel). Start-up log and reports: `~/Library/Application Support/PointCloudStudio/`. To see start-up messages, run `PointCloudStudio.app/Contents/MacOS/PointCloudStudio` from Terminal.
 
 **macOS: first start.** The app is not signed with an Apple Developer ID, so macOS blocks it at first ("cannot be opened" / "is damaged"). Either right-click the app → **Open** → **Open**, or remove the download quarantine once:
 
@@ -149,6 +153,7 @@ pointcloud-studio/
 ├── PointCloudStudio.spec    # PyInstaller build specification
 ├── build_windows.bat        # One-click Windows build
 ├── build_mac.sh             # One-click macOS build (.app + .dmg)
+├── setup_mac.sh             # macOS: set up and run from source (installs missing modules)
 ├── check_env.bat            # Environment / DLL diagnostics
 ├── core/                    # Data model and algorithms (point cloud, project, CRS, surfaces,
 │                            #   filters, sections, routes, volumes, earthworks, contours, self-test)
@@ -172,8 +177,10 @@ pointcloud-studio/
 ### Releases
 
 #### 0.1.13
-- **Added** — macOS version (macOS 11+, Apple Silicon and Intel): `build_mac.sh` builds `PointCloudStudio.app` and a `.dmg`; GitHub Actions builds both architectures on every version tag.
+- **Added** — macOS version (Apple Silicon and Intel; the minimum macOS of a build is taken from its libraries): `build_mac.sh` builds `PointCloudStudio.app` and a `.dmg`; GitHub Actions builds both architectures on every version tag.
 - **Added** — macOS integration: Retina rendering, files opened from Finder (*Open With*, double-click a `.pcsproj`, drop on the Dock icon), shortcut labels shown with ⌘ / ⌥, system font, trackpad pinch zoom.
+- **Added** — Missing-module handling: `setup_mac.sh` and `build_mac.sh` find or install Python, check network and SSL certificates, and install every missing module one by one (pre-built first, compile only as fallback, Command Line Tools offered when needed) instead of stopping at the first error; `core/deps.py check | install` on every platform; the program (from source) lists missing modules at start-up and offers to install them, and features needing a missing optional module offer the same. Builds succeed without the optional modules (those features are then unavailable).
+- **Added** — Missing optional modules no longer look like crashes: load / project / feature errors caused by a missing module (including LAZ without `lazrs`) open the install dialog; the self-test marks those steps SKIP instead of FAIL.
 - **Changed** — On macOS, the start-up log and self-test / diagnostic reports are written to `~/Library/Application Support/PointCloudStudio/` (never inside the app bundle). The software-OpenGL fallback applies to Windows only.
 
 #### 0.1.12

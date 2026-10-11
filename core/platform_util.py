@@ -32,6 +32,18 @@ def app_data_dir():
         return tempfile.gettempdir()
 
 
+def startup_marker():
+    """File that exists while a start is in progress (Windows: next start falls back to software OpenGL)."""
+    return os.path.join(app_data_dir(), "startup_in_progress")
+
+
+def clear_startup_marker():
+    try:
+        os.remove(startup_marker())
+    except OSError:
+        pass
+
+
 def report_dir():
     """Where --selftest / --diagnose reports are written.
 
