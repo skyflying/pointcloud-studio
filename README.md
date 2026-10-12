@@ -5,7 +5,7 @@ A desktop application for viewing, cleaning, and analysing point cloud data from
 <!-- Replace with a real screenshot: save it as docs/screenshot.png -->
 ![PointCloud Studio screenshot](https://raw.githubusercontent.com/skyflying/pointcloud-studio/refs/heads/main/blob/screenshot.png)
 
-**Current version: 0.1.13** · [Releases](../../releases) · [使用說明（繁體中文）](docs/USER_GUIDE.zh-TW.md)
+**Current version: 0.1.15** · [Releases](../../releases) · [使用說明（繁體中文）](docs/USER_GUIDE.zh-TW.md)
 
 ---
 
@@ -51,6 +51,17 @@ A desktop application for viewing, cleaning, and analysing point cloud data from
 - **Volume / difference** between two surfaces or against a base level, within the whole overlap, a route corridor, a subset box or a polygon (drawn or from a Shapefile); coverage check, Δ layer, CSV report, Δ GeoTIFF
 - **Earthworks design** (marine and land): cut / fill to a design level — given as elevation or depth — with over-cut allowance and side slopes 1 : n; **trench** along a route (bottom width, depth below the surface, side slopes) with excavation volume per KP interval; bulking and shrinkage factors with cut / fill balance
 - Point cloud to surface deviation; seabed **slope map** with threshold statistics
+
+**Cable & Foundations**
+- **Cable profiles**: routes imported with a top-of-cable column (elevation or depth, e.g. SBI / TSS / ROV data) and optionally the survey's reported DoB; Shapefile PolyLineZ values can be used as cable top. Drawn at their own level in 3D (orange) and as a cable-top line in the profile panel
+- **Depth of burial**: DoB = seabed − cable top every *step* metres against a target burial; seabed from a DEM, TIN or point-cloud corridor; non-compliant segments (KP from / to, length, minimum DoB), KP-bin statistics and compliance percentage, comparison with the reported DoB
+- **Free spans**: (A) cable profile + seabed, or (B) point cloud only — the cable crest is found in the corridor and the seabed under it interpolated from both sides; gap = cable bottom − seabed; spans listed with length and maximum gap, flagged against a reporting length
+- **Rock berm as-built**: design from a template (crest width, height, side and end slopes on the pre-lay seabed) or an imported design surface; as-built − design thickness, under- / over-filled area and volume, coverage, design / placed volume per KP bin, crest error along the centre line, rock cover over the cable against a minimum; design and Δ layers; check cross-sections at a fixed interval
+- **Structures** (wind turbines, substations, piles): name, position and foundation diameter from CSV / TXT (column mapping) or Shapefile points; drawn as circles with names
+- **Survey dates** on point clouds and surfaces (Data panel → ⋯ → Survey date, or in the analysis tables): epochs are ordered by date and rates are given per year
+- **Scour monitoring**: per structure and survey — reference level from a far-field ring (×D), a baseline surface or a fixed level; maximum scour depth with distance and bearing, mean depth, scour extent (area connected to the pile deeper than a threshold), scour area and volume, change and rate between surveys; radial profiles, depth map, depth layers and GeoTIFFs
+- **Sand wave migration**: bedforms separated from the regional seabed; displacement per window by 2D surface matching (speed and direction, crest-normal for long-crested bedforms) or along the route profile; crest tracking; burial forecast for a cable profile (bedform pattern moved at the observed along-route rate) with years to exposure and exposure-risk segments — a linear extrapolation for planning
+- Results: summary, KP chart, segment and KP-bin tables (double-click → go to the location), coloured segments in 3D, export to CSV (summary / segments / KP bins / stations), Shapefile (PolyLineZ segments) and PNG
 
 **Interface**
 - English UI with a dark, modern theme
@@ -130,7 +141,7 @@ On Windows, run **`build_windows.bat`** in the project folder. It finds a python
 
 If the program does not start, see `%LOCALAPPDATA%\PointCloudStudio\startup.log`, or run **`check_env.bat`** for a report of the Python / Qt / DLL environment.
 
-On macOS, run **`bash build_mac.sh`** in Terminal in the project folder. It runs the same checks as `setup_mac.sh` (Python, network, certificates, missing modules with retry), creates a clean virtual environment, builds `dist/PointCloudStudio.app`, runs the self-test and packs `dist/PointCloudStudio-<version>-macos-<arch>.dmg`. The app is built for the architecture of the Python used (arm64 on Apple Silicon, x86_64 on Intel). Start-up log and reports: `~/Library/Application Support/PointCloudStudio/`. To see start-up messages, run `PointCloudStudio.app/Contents/MacOS/PointCloudStudio` from Terminal.
+On macOS, run **`bash build_mac.sh`** in Terminal in the project folder. It runs the same checks as `setup_mac.sh` (Python, network, certificates, missing modules with retry; an active Anaconda / Miniconda environment is ignored automatically), creates a clean virtual environment, builds `dist/PointCloudStudio.app`, runs the self-test and packs `dist/PointCloudStudio-<version>-macos-<arch>.dmg`. The app is built for the architecture of the Python used (arm64 on Apple Silicon, x86_64 on Intel). Start-up log and reports: `~/Library/Application Support/PointCloudStudio/`. To see start-up messages, run `PointCloudStudio.app/Contents/MacOS/PointCloudStudio` from Terminal.
 
 **macOS: first start.** The app is not signed with an Apple Developer ID, so macOS blocks it at first ("cannot be opened" / "is damaged"). Either right-click the app → **Open** → **Open**, or remove the download quarantine once:
 
@@ -156,11 +167,12 @@ pointcloud-studio/
 ├── setup_mac.sh             # macOS: set up and run from source (installs missing modules)
 ├── check_env.bat            # Environment / DLL diagnostics
 ├── core/                    # Data model and algorithms (point cloud, project, CRS, surfaces,
-│                            #   filters, sections, routes, volumes, earthworks, contours, self-test)
+│                            #   filters, sections, routes, volumes, earthworks, contours, cable analyses,
+│                            #   self-test)
 ├── fileio/                  # Readers / writers (XYZ, LAS/LAZ, grids, routes, surfaces, contours)
 ├── render/                  # 3D view (VisPy), colour maps, colour bar, picking, interaction
 ├── ui/                      # Main window and dialogs (PySide6)
-├── tools/                   # Environment check, sample data generator
+├── tools/                   # Environment check, sample data generator, macOS build helpers
 ├── docs/
 │   └── USER_GUIDE.zh-TW.md  # User guide (Traditional Chinese)
 ├── blob/
@@ -176,11 +188,24 @@ pointcloud-studio/
 
 ### Releases
 
+#### 0.1.15
+- **Added** — Structures (CSV / Shapefile import with name and diameter), survey dates on datasets, **scour monitoring** (far-field / baseline / level reference, maximum depth, extent, area, volume, rates, radial profiles, depth maps and GeoTIFFs) and **sand wave migration** (2D matching or profile, crest tracking, burial forecast with years to exposure). CSV / Shapefile / PNG export, 3D overlays.
+- **Fixed** — A project whose first data were surfaces only (e.g. opening a GeoTIFF without a point cloud) failed to colour the surface.
+- **Added** — Self-test: scour hole and oblique sand waves with known depths, rates and direction.
+- **Fixed** (review of 0.1.14–0.1.15) — KP ranges outside the route are refused with a message instead of analysing a zero-length piece; the DoB / free-span KP range follows the chosen route; the rock-berm pre-lay choice "(none)" is no longer reset; scour results keep only the analysis radius (≈ 15× less memory for large wind farms); scour extent is found when the survey has no data right at the pile wall (gap up to 0.25 D); TIN surveys are rasterised per window (scour, 2D sand-wave matching) instead of as a whole; the sand-wave forecast explains why it was skipped (no cable Z, cable > 10 m from the route, no dates, no reliable window); a second analysis while one is running, or one using a removed dataset, gives a message; invalid survey dates count as "no date"; structures in latitude / longitude ask for a projected project system; projects with structures are marked format version 2 so older versions report it clearly; zoom to a route or structure layer works without Z.
+
+#### 0.1.14
+- **Added** — *Cable & Foundations* menu: depth of burial, free spans (cable profile + seabed, or point cloud only) and rock berm as-built verification (template or design surface), with KP charts, segment / KP-bin tables, coloured 3D segments, and CSV / Shapefile / PNG export. Rock berm: design and as-built − design layers, check cross-sections.
+- **Added** — Cable profiles: route import maps *Cable top (elevation)*, *Cable top (depth, + down)* and *DoB (reported)* columns; Shapefile PolyLineZ values can be used as cable top. Saved in the project; drawn at their own level in 3D and in the profile panel.
+- **Added** — Self-test: synthetic cable with known DoB, span lengths / gaps and berm volumes.
+
 #### 0.1.13
 - **Added** — macOS version (Apple Silicon and Intel; the minimum macOS of a build is taken from its libraries): `build_mac.sh` builds `PointCloudStudio.app` and a `.dmg`; GitHub Actions builds both architectures on every version tag.
 - **Added** — macOS integration: Retina rendering, files opened from Finder (*Open With*, double-click a `.pcsproj`, drop on the Dock icon), shortcut labels shown with ⌘ / ⌥, system font, trackpad pinch zoom.
 - **Added** — Missing-module handling: `setup_mac.sh` and `build_mac.sh` find or install Python, check network and SSL certificates, and install every missing module one by one (pre-built first, compile only as fallback, Command Line Tools offered when needed) instead of stopping at the first error; `core/deps.py check | install` on every platform; the program (from source) lists missing modules at start-up and offers to install them, and features needing a missing optional module offer the same. Builds succeed without the optional modules (those features are then unavailable).
 - **Added** — Missing optional modules no longer look like crashes: load / project / feature errors caused by a missing module (including LAZ without `lazrs`) open the install dialog; the self-test marks those steps SKIP instead of FAIL.
+- **Fixed** — macOS build: pyproj and rasterio both bundle `libproj.25.x.dylib` under the same name, and the app loaded rasterio's copy for pyproj ("Symbol not found: _proj_context_create"). Same-named libraries of different packages are now renamed before PyInstaller runs (`tools/mac_fix_dylibs.py`, automatic). A failed self-test is reported prominently at the end of `build_mac.sh`.
+- **Fixed** — GeoTIFF CRS lost (EPSG read back as none) when the shell had `PROJ_DATA` / `PROJ_LIB` / `GDAL_DATA` from another installation (an active Anaconda environment, QGIS, Homebrew GDAL): rasterio then used that installation's `proj.db`. The program and the build scripts now ignore these variables and use the data bundled with pyproj and rasterio (`PCS_KEEP_GEO_ENV=1` keeps them).
 - **Changed** — On macOS, the start-up log and self-test / diagnostic reports are written to `~/Library/Application Support/PointCloudStudio/` (never inside the app bundle). The software-OpenGL fallback applies to Windows only.
 
 #### 0.1.12

@@ -36,6 +36,8 @@ from ui.about_dialog import AboutDialog, ShortcutsDialog
 from ui.data_panel import DataCard
 from ui.project_mixin import ALL_FILTER, ProjectFileMixin, ProjectMixin
 from ui.analysis_mixin import AnalysisMixin, ContourMixin, DesignMixin
+from ui.cable_mixin import CableMixin
+from ui.seabed_mixin import SeabedMixin
 from ui.subset_mixin import ClassifyMixin, FilterMixin, RouteMixin, SubsetMixin
 from ui.export_dialog import ExportDialog
 from ui.import_dialog import XyzImportDialog
@@ -112,7 +114,7 @@ class EmptyState(QWidget):
 
 
 # ---------------------------------------------------------------- main window
-class MainWindow(ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteMixin, FilterMixin, SubsetMixin, ProjectFileMixin, ProjectMixin, QMainWindow):
+class MainWindow(SeabedMixin, CableMixin, ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteMixin, FilterMixin, SubsetMixin, ProjectFileMixin, ProjectMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
@@ -131,6 +133,8 @@ class MainWindow(ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteM
         self._init_subset_state()
         self.filter_dialog = None
         self._init_analysis_state()
+        self._init_cable_state()
+        self._init_seabed_state()
         self.region_visible = self.subset_visible = self.reviewed_visible = True
         self._filter_saved = None
         self.sections = []
@@ -241,6 +245,13 @@ class MainWindow(ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteM
                                   triggered=self.open_design_dialog)
         self.act_slope = QAction("Slope Map…", self, triggered=self.open_slope_map)
         self.act_contours = QAction("Contours…", self, shortcut="Ctrl+Shift+C", triggered=self.open_contour_dialog)
+        self.act_dob = QAction("Depth of Burial…", self, shortcut="Ctrl+Shift+B",
+                               triggered=lambda: self.open_cable_dialog(0))
+        self.act_span = QAction("Free Spans…", self, triggered=lambda: self.open_cable_dialog(1))
+        self.act_berm = QAction("Rock Berm As-built…", self, triggered=lambda: self.open_cable_dialog(2))
+        self.act_structs = QAction("Import Structures…", self, triggered=self.import_structures)
+        self.act_scour = QAction("Scour Monitoring…", self, triggered=lambda: self.open_seabed_dialog(0))
+        self.act_sandwave = QAction("Sand Wave Migration…", self, triggered=lambda: self.open_seabed_dialog(1))
         self.act_tin = QAction("Create TIN…", self, shortcut="Ctrl+T", triggered=self.create_tin)
         self.act_dem = QAction("Create DEM…", self, shortcut="Ctrl+G", triggered=self.create_dem)
         self.act_exp_tin = QAction(icon("export"), "Export TIN…", self, triggered=self.export_tin)
@@ -290,6 +301,15 @@ class MainWindow(ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteM
         m_an.addAction(self.act_design)
         m_an.addAction(self.act_slope)
         m_an.addAction(self.act_contours)
+        m_cab = self.menuBar().addMenu("&Cable && Foundations")
+        m_cab.addAction(self.act_route)
+        m_cab.addAction(self.act_structs)
+        m_cab.addSeparator()
+        for a in (self.act_dob, self.act_span, self.act_berm):
+            m_cab.addAction(a)
+        m_cab.addSeparator()
+        for a in (self.act_scour, self.act_sandwave):
+            m_cab.addAction(a)
         m_sel = self.menuBar().addMenu("&Select")
         self._m_sel = m_sel
         for a in self.mode_actions.values():

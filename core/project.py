@@ -18,7 +18,7 @@ from core.selection import Selection
 from core.surface import Dem, Tin
 from core.trash import Trash
 
-KIND_LABEL = {"points": "PTS", "grid": "DEM", "tin": "TIN", "route": "RTE", "contour": "CNT"}
+KIND_LABEL = {"points": "PTS", "grid": "DEM", "tin": "TIN", "route": "RTE", "contour": "CNT", "structure": "STR"}
 
 
 @dataclass
@@ -35,6 +35,7 @@ class Dataset:
     derived_from: int | None = None
     edit_version: int = 0           # points: bumped on every edit; tin/grid: version of the source when built
     z_flipped: bool = False         # Z sign flipped after loading (file stored depths, positive down)
+    survey_date: str | None = None  # 'YYYY-MM-DD' — epochs for scour / sand-wave analyses
     id: int = 0
     # editing state (point clouds only)
     sel: Selection | None = None
@@ -65,8 +66,13 @@ class Dataset:
             return o.vertices.min(axis=0), o.vertices.max(axis=0)
         if o.__class__.__name__ == "ContourSet":
             return o.bbox()
+        if o.__class__.__name__ == "Structures":
+            lo, hi = o.xy.min(axis=0) - o.diameter.max(), o.xy.max(axis=0) + o.diameter.max()
+            return np.array([lo[0], lo[1], np.nan]), np.array([hi[0], hi[1], np.nan])
         if isinstance(o, Route):                     # no Z: NaN is ignored in the project bbox
             lo, hi = o.xy.min(axis=0), o.xy.max(axis=0)
+            if o.z is not None:
+                return (np.array([lo[0], lo[1], np.nanmin(o.z)]), np.array([hi[0], hi[1], np.nanmax(o.z)]))
             return np.array([lo[0], lo[1], np.nan]), np.array([hi[0], hi[1], np.nan])
         raise TypeError(type(o))
 
@@ -82,9 +88,12 @@ class Dataset:
             return f"{len(o.triangles):,} tri"
         if o.__class__.__name__ == "ContourSet":
             return f"{len(o.lines):,} lines · {o.n_levels} levels · {o.interval:g} m"
+        if o.__class__.__name__ == "Structures":
+            d = np.unique(np.round(o.diameter, 2))
+            return f"{len(o)} structure(s) · Ø " + (f"{d[0]:g} m" if len(d) == 1 else f"{d.min():g}–{d.max():g} m")
         if isinstance(o, Route):
             k0, k1 = o.kp_range()
-            return f"{o.length / 1000:,.3f} km · KP {k0:,.3f} – {k1:,.3f}"
+            return f"{o.length / 1000:,.3f} km · KP {k0:,.3f} – {k1:,.3f}" + (" · cable Z" if o.z is not None else "")
         return ""
 
 

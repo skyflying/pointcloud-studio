@@ -41,7 +41,10 @@ say "Running self-test…"
 ST=$?
 REPORT="$HOME/Library/Application Support/PointCloudStudio/selftest_report.txt"
 [[ -f "$REPORT" ]] && cat "$REPORT"
-[[ $ST -ne 0 ]] && warn "Self-test reported problems (exit $ST) — see above. The app was still built."
+if [[ $ST -ne 0 ]]; then
+  fail "SELF-TEST FAILED (exit $ST) — the app may not work. Check the [FAIL] lines above before using"
+  fail "or sharing it, and send them for help. (The app and DMG were still created.)"
+fi
 
 # ---- disk image with an Applications shortcut
 DMG="dist/PointCloudStudio-${VERSION}-macos-${ARCH}.dmg"

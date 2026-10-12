@@ -10,7 +10,9 @@ from core import crs as crsmod
 from core.route import Route
 from fileio.xyz_reader import DELIMITERS
 
-ROUTE_ROLES = ["Easting (X)", "Northing (Y)", "Longitude", "Latitude", "KP", "Route ID", "Ignore"]
+ROUTE_ROLES = ["Easting (X)", "Northing (Y)", "Longitude", "Latitude", "KP", "Route ID",
+               "Cable top (elevation)", "Cable top (depth, + down)", "DoB (reported)", "Ignore"]
+CABLE_ROLES = ("Cable top (elevation)", "Cable top (depth, + down)", "DoB (reported)")
 
 
 def read_shp(path):
@@ -32,7 +34,12 @@ def read_shp(path):
                 xy = np.asarray(sh.points[parts[j]:parts[j + 1]], dtype=np.float64)[:, :2]
                 if len(xy) >= 2:
                     nm = label if len(sh.parts) == 1 else f"{label} part {j + 1}"
-                    routes.append(Route(nm, xy, meta={"attributes": rec}))
+                    zz = None
+                    if sh.shapeType == shapefile.POLYLINEZ and getattr(sh, "z", None) is not None:
+                        zz = np.asarray(sh.z[parts[j]:parts[j + 1]], dtype=np.float64)
+                        if len(zz) != len(xy) or not np.any(np.abs(zz) > 1e-9):
+                            zz = None                         # all-zero Z = 2D line stored as PolyLineZ
+                    routes.append(Route(nm, xy, meta={"attributes": rec, "shp_z": zz}))
         elif sh.shapeType in (shapefile.POINT, shapefile.POINTZ, shapefile.POINTM):
             pts.append(sh.points[0][:2])
     if pts and len(pts) >= 2:
@@ -60,6 +67,12 @@ def read_route_table(path, skip_rows, delim_key, roles, encoding=None, kp_unit="
     if kp is not None and kp_unit == "m":
         kp = kp / 1000.0
     rid = df[col["Route ID"]].astype(str).to_numpy() if "Route ID" in col else np.full(len(x), "")
+    ztop = None
+    if "Cable top (elevation)" in col:
+        ztop = pd.to_numeric(df[col["Cable top (elevation)"]], errors="coerce").to_numpy()
+    elif "Cable top (depth, + down)" in col:
+        ztop = -pd.to_numeric(df[col["Cable top (depth, + down)"]], errors="coerce").to_numpy()
+    dob = pd.to_numeric(df[col["DoB (reported)"]], errors="coerce").to_numpy() if "DoB (reported)" in col else None
     ok = np.isfinite(x) & np.isfinite(y)
     if kp is not None:
         ok &= np.isfinite(kp)
@@ -71,14 +84,18 @@ def read_route_table(path, skip_rows, delim_key, roles, encoding=None, kp_unit="
         if len(xy) < 2:
             continue
         r = Route(f"{base} {name}".strip() if name else base, xy, kp[m] if kp is not None else None,
-                  start_kp=start_kp)
+                  start_kp=start_kp, z=ztop[m] if ztop is not None else None,
+                  dob=dob[m] if dob is not None else None)
         routes.append(r)
     if not routes:
         raise ValueError("No route with at least two valid vertices was found")
     return routes, geo
 
 
-HEADER_KEYS = [("KP", ("kp", "chainage", "km", "kmp")), ("Latitude", ("lat",)), ("Longitude", ("lon", "long")),
+HEADER_KEYS = [("DoB (reported)", ("dob", "burial", "depth of burial", "doc")),
+               ("Cable top (elevation)", ("toc", "top of cable", "cable top", "cable z", "top z", "z", "elevation")),
+               ("Cable top (depth, + down)", ("toc depth", "cable depth", "top depth", "depth")),
+               ("KP", ("kp", "chainage", "km", "kmp")), ("Latitude", ("lat",)), ("Longitude", ("lon", "long")),
                ("Easting (X)", ("east", "x", "e")), ("Northing (Y)", ("north", "y", "n")),
                ("Route ID", ("id", "name", "cable", "route", "line"))]
 

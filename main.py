@@ -55,6 +55,13 @@ def log(msg):
 
 _in_hook = False
 
+from core.platform_util import isolate_geo_env  # noqa: E402
+
+_GEO_REMOVED = isolate_geo_env()        # before anything imports rasterio / pyproj
+if _GEO_REMOVED:
+    log("Ignoring external GDAL/PROJ data paths (use the bundled ones): "
+        + ", ".join(f"{k}={v}" for k, v in _GEO_REMOVED.items()))
+
 VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 
 

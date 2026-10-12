@@ -32,6 +32,25 @@ def app_data_dir():
         return tempfile.gettempdir()
 
 
+# Data-path variables of GDAL / PROJ installations (Anaconda, QGIS, OSGeo4W, Homebrew GDAL…).
+# rasterio prefers them over its own bundled data, so e.g. an active conda "(base)" makes rasterio's
+# PROJ read Anaconda's proj.db of another PROJ version → EPSG codes are no longer recognised.
+# pyproj and rasterio both ship matching data with their wheels, so the program ignores these.
+GEO_ENV_VARS = ("PROJ_DATA", "PROJ_LIB", "GDAL_DATA", "GDAL_DRIVER_PATH", "GEOTIFF_CSV")
+
+
+def isolate_geo_env():
+    """Remove external GDAL / PROJ data paths from this process (set PCS_KEEP_GEO_ENV=1 to keep them).
+    Returns {name: value} of what was removed."""
+    if os.environ.get("PCS_KEEP_GEO_ENV"):
+        return {}
+    removed = {}
+    for k in GEO_ENV_VARS:
+        if k in os.environ:
+            removed[k] = os.environ.pop(k)
+    return removed
+
+
 def startup_marker():
     """File that exists while a start is in progress (Windows: next start falls back to software OpenGL)."""
     return os.path.join(app_data_dir(), "startup_in_progress")

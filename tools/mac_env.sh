@@ -144,8 +144,41 @@ make_venv() {
   source "$dir/bin/activate"
 }
 
+# An active Anaconda / Miniconda environment ("(base)" in the prompt) puts its own python3, pip
+# and Qt first on PATH. Hide it for the rest of this script — the user's shell is not changed.
+isolate_from_conda() {
+  local dir newpath="" removed=0 IFS=:
+  for dir in $PATH; do
+    if [[ -x "$dir/conda" || -d "$dir/../conda-meta" || "$dir" == *conda*/bin || "$dir" == *conda*/condabin ]]; then
+      removed=1
+      continue
+    fi
+    newpath="${newpath:+$newpath:}$dir"
+  done
+  if (( removed )) || [[ -n "${CONDA_PREFIX:-}" ]]; then
+    warn "Anaconda / Miniconda is active (${CONDA_DEFAULT_ENV:-conda}) — ignoring it for this script."
+    say  "    (Its Python cannot be used: its Qt conflicts with PySide6. Your conda setup is not changed.)"
+    export PATH="$newpath"
+    unset CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_PYTHON_EXE CONDA_SHLVL PYTHONHOME PYTHONPATH
+  fi
+}
+
+# GDAL / PROJ data paths from conda, QGIS or Homebrew GDAL make rasterio read another PROJ's
+# proj.db (EPSG codes then fail). The wheels bring their own data — ignore these for this script.
+isolate_geo_env() {
+  local v
+  for v in PROJ_DATA PROJ_LIB GDAL_DATA GDAL_DRIVER_PATH GEOTIFF_CSV; do
+    if [[ -n "${!v:-}" ]]; then
+      warn "Ignoring $v=${!v} (data of another GDAL/PROJ installation)"
+      unset "$v"
+    fi
+  done
+}
+
 # preflight → everything up to a usable PYEXE
 mac_preflight() {
+  isolate_from_conda
+  isolate_geo_env
   check_macos || return 1
   check_network || return 1
   find_python || install_python_org || return 1

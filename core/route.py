@@ -1,4 +1,7 @@
-"""Cable / pipeline routes: polyline in project coordinates + KP (kilometre point) per vertex."""
+"""Cable / pipeline routes: polyline in project coordinates + KP (kilometre point) per vertex.
+
+A route can also be a cable PROFILE: `z` = elevation of the top of the cable at each vertex
+(positive up, as all Z in the program) and optionally `dob` = depth of burial reported in the file."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -19,11 +22,22 @@ class Route:
     kp: np.ndarray | None = None        # (N,) KP in km at each vertex (None → computed from start_kp)
     start_kp: float = 0.0               # km, used when kp is None
     meta: dict = field(default_factory=dict)
+    z: np.ndarray | None = None         # (N,) cable-top elevation (cable profile), NaN where unknown
+    dob: np.ndarray | None = None       # (N,) depth of burial reported in the file (m, + = buried)
 
     def __post_init__(self):
         self.xy = np.asarray(self.xy, dtype=np.float64)
         if self.kp is not None:
             self.kp = np.asarray(self.kp, dtype=np.float64)
+        for k in ("z", "dob"):
+            v = getattr(self, k)
+            if v is not None:
+                v = np.asarray(v, dtype=np.float64)
+                setattr(self, k, v if np.isfinite(v).any() else None)
+
+    @property
+    def has_z(self):
+        return self.z is not None
 
     @property
     def cum(self):

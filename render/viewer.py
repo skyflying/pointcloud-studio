@@ -114,6 +114,26 @@ class PointCloudViewer:
         self.route_text.set_gl_state("translucent", depth_test=False)
         self.route_text.order = 6
         self.route_text.visible = False
+        # structures (WTG / OSS): circle of the foundation diameter + name
+        self.str_lines = scene.visuals.Line(parent=self.view.scene, method="gl", width=2.0)
+        self.str_lines.set_gl_state("translucent", depth_test=False)
+        self.str_lines.order = 4
+        self.str_lines.visible = False
+        self.str_text = scene.visuals.Text(parent=self.view.scene, color=(1.0, 0.62, 0.26, 1.0), font_size=9,
+                                           anchor_x="left", anchor_y="bottom")
+        self.str_text.set_gl_state("translucent", depth_test=False)
+        self.str_text.order = 6
+        self.str_text.visible = False
+        # analysis results along routes (DoB / free spans / berm): coloured polylines + labels
+        self.ana_lines = scene.visuals.Line(parent=self.view.scene, method="gl", width=5.0)
+        self.ana_lines.set_gl_state("translucent", depth_test=False)
+        self.ana_lines.order = 7
+        self.ana_lines.visible = False
+        self.ana_text = scene.visuals.Text(parent=self.view.scene, color=(1.0, 1.0, 1.0, 1.0), font_size=9,
+                                           anchor_x="left", anchor_y="bottom")
+        self.ana_text.set_gl_state("translucent", depth_test=False)
+        self.ana_text.order = 8
+        self.ana_text.visible = False
 
         self.surfaces = {"tin": SurfaceLayer(self.view.scene, "tin"),
                          "dem": SurfaceLayer(self.view.scene, "dem")}
@@ -422,7 +442,17 @@ class PointCloudViewer:
             else:
                 layer.cvals = layer.own_scale = None
             layer.mesh.transform = STTransform(scale=(1.0, 1.0, self.z_scale))
-            layer.set_data(V, F, z, self._ensure_elev_scale(), self.z_scale)
+            sc = self._ensure_elev_scale()
+            if sc.vmin is None:
+                # first data of the project is this surface (no point cloud yet): range from its heights
+                zz = np.asarray(z, float)
+                zz = zz[np.isfinite(zz)]
+                if len(zz):
+                    self._apply_axis(sc, *auto_range(zz, *AUTO_PERCENTILES["elevation"]))
+                    self._auto_palette(sc, zz)
+                else:
+                    self._apply_axis(sc, 0.0, 1.0)
+            layer.set_data(V, F, z, sc, self.z_scale)
             layer.mesh.visible = True
         self.canvas.update()
         self._notify()
@@ -535,7 +565,9 @@ class PointCloudViewer:
         self.z_scale = float(z)
         for m in ([self.markers, self.trash_markers, self.sel_markers, self.sec_lines, self.sec_verts]
                   + [l.mesh for l in self.surfaces.values()] + [r["markers"] for r in self.refs.values()]
-                  + list(self.contours.values()) + list(self.contour_labels.values())):
+                  + list(self.contours.values()) + list(self.contour_labels.values())
+                  + [self.route_lines, self.route_text, self.ana_lines, self.ana_text, self.str_lines,
+                     self.str_text]):
             m.transform = STTransform(scale=(1.0, 1.0, self.z_scale))
         for layer in self.surfaces.values():
             layer.update_shade(self.z_scale, self._ensure_elev_scale())
@@ -811,39 +843,128 @@ class PointCloudViewer:
         self.canvas.update()
 
     # ---------- routes ----------
+    def _z_pairs(self, xy, z):
+        """Polyline (world XY + world Z per vertex) → local segment pairs; NaN Z → draped."""
+        o = self.origin
+        loc = np.column_stack([xy[:, 0] - o[0], xy[:, 1] - o[1], np.asarray(z, float) - o[2]])
+        miss = ~np.isfinite(loc[:, 2])
+        if miss.any():
+            loc[miss, 2] = self._drape_z(loc[miss, 0], loc[miss, 1])
+        return np.repeat(loc, 2, axis=0)[1:-1]
+
     def set_routes(self, routes):
-        """routes: list of Route objects (visible ones). Cyan polylines + KP labels at round values."""
+        """routes: list of Route objects (visible ones). Cyan polylines draped on the terrain + KP labels at
+        round values; cable profiles (routes with cable-top Z) are drawn orange at their own level."""
+        from core.route import dist_label
         from render.colormap import nice_ticks
         if self.origin is None or not routes:
             self.route_lines.visible = self.route_text.visible = False
             self.canvas.update()
             return
         off = self.origin[:2]
-        z = self.overlay_z
-        pos, labels, lpos = [], [], []
+        pos, cols, labels, lpos, lz = [], [], [], [], []
+        drape = []
         for r in routes:
-            for a, b in zip(r.xy[:-1], r.xy[1:]):
-                pos.extend([a, b])
+            if r.z is not None:
+                q = self._z_pairs(r.xy, r.z)
+                pos.append(q)
+                cols.append(np.tile((1.0, 0.62, 0.26, 1.0), (len(q), 1)))
+            else:
+                for a, b in zip(r.xy[:-1], r.xy[1:]):
+                    drape.extend([a, b])
             k0, k1 = r.kp_range()
             ticks, dec = nice_ticks(k0, k1, target=8)
             for k in ticks:
-                p = r.xy_at(r.chainage_at_kp(k))
-                from core.route import dist_label
+                c = r.chainage_at_kp(k)
+                lpos.append(r.xy_at(c))
+                lz.append(np.interp(c, r.cum, r.z) if r.z is not None else np.nan)
                 labels.append(f"{dist_label()} {k:.{max(dec, 1)}f}")
-                lpos.append(p)
             labels.append(r.name)
             lpos.append(r.xy[0])
+            lz.append(r.z[0] if r.z is not None else np.nan)
+        if drape:
+            q = self._drape_pairs(drape)
+            pos.append(q)
+            cols.append(np.tile((0.30, 0.79, 0.94, 1.0), (len(q), 1)))
         tr = STTransform(scale=(1.0, 1.0, self.z_scale))
-        self.route_lines.set_data(pos=self._drape_pairs(pos).astype(np.float32), color=(0.30, 0.79, 0.94, 1.0),
+        self.route_lines.set_data(pos=np.vstack(pos).astype(np.float32), color=np.vstack(cols).astype(np.float32),
                                   connect="segments")
         self.route_lines.transform = tr
         self.route_lines.visible = True
         L = np.asarray(lpos, float)
-        self.route_text.text = labels
         lx, ly = L[:, 0] - off[0], L[:, 1] - off[1]
-        self.route_text.pos = np.column_stack([lx, ly, self._drape_z(lx, ly)]).astype(np.float32)
+        z = np.asarray(lz, float) - self.origin[2]
+        z = np.where(np.isfinite(z), z, self._drape_z(lx, ly))
+        self.route_text.text = labels
+        self.route_text.pos = np.column_stack([lx, ly, z]).astype(np.float32)
         self.route_text.transform = tr
         self.route_text.visible = True
+        self.canvas.update()
+
+    def set_structures(self, groups):
+        """groups: list of Structures (visible ones) → orange circles (foundation diameter, at least 3 m drawn)
+        on the terrain, with names."""
+        if self.origin is None or not groups or not any(len(g) for g in groups):
+            self.str_lines.visible = self.str_text.visible = False
+            self.canvas.update()
+            return
+        t = np.linspace(0, 2 * np.pi, 33)
+        pos, labels, lp = [], [], []
+        o = self.origin
+        for g in groups:
+            for name, (x, y), d in zip(g.names, g.xy, g.diameter):
+                r = max(d / 2.0, 1.5)
+                lx, ly = x - o[0] + r * np.cos(t), y - o[1] + r * np.sin(t)
+                z = self._drape_z(lx, ly)
+                q = np.column_stack([lx, ly, z])
+                pos.append(np.repeat(q, 2, axis=0)[1:-1])
+                labels.append(name)
+                lp.append((x - o[0] + r, y - o[1], float(np.nanmax(z))))
+        tr = STTransform(scale=(1.0, 1.0, self.z_scale))
+        self.str_lines.set_data(pos=np.vstack(pos).astype(np.float32), color=(1.0, 0.62, 0.26, 1.0),
+                                connect="segments")
+        self.str_lines.transform = tr
+        self.str_lines.visible = True
+        self.str_text.text = labels
+        self.str_text.pos = np.asarray(lp, np.float32)
+        self.str_text.transform = tr
+        self.str_text.visible = True
+        self.canvas.update()
+
+    def set_analysis_overlay(self, lines=(), labels=()):
+        """lines: [{xy (N,2) world, z (N,) world or None (draped), color rgba}];
+        labels: [(x, y, z or None, text)]. Empty → hidden."""
+        if self.origin is None or not lines:
+            self.ana_lines.visible = self.ana_text.visible = False
+            self.canvas.update()
+            return
+        pos, cols = [], []
+        for ln in lines:
+            xy = np.asarray(ln["xy"], float)
+            if len(xy) < 2:
+                continue
+            z = ln.get("z")
+            q = self._z_pairs(xy, np.full(len(xy), np.nan) if z is None else z)
+            pos.append(q)
+            cols.append(np.tile(ln["color"], (len(q), 1)))
+        tr = STTransform(scale=(1.0, 1.0, self.z_scale))
+        if pos:
+            self.ana_lines.set_data(pos=np.vstack(pos).astype(np.float32), color=np.vstack(cols).astype(np.float32),
+                                    connect="segments")
+            self.ana_lines.transform = tr
+            self.ana_lines.visible = True
+        if labels:
+            o = self.origin
+            P = np.array([[x - o[0], y - o[1], np.nan if z is None else z - o[2]] for x, y, z, _t in labels], float)
+            miss = ~np.isfinite(P[:, 2])
+            if miss.any():
+                P[miss, 2] = self._drape_z(P[miss, 0], P[miss, 1])
+            self.ana_text.text = [t for *_r, t in labels]
+            self.ana_text.pos = P.astype(np.float32)
+            self.ana_text.transform = tr
+            self.ana_text.visible = True
+        else:
+            self.ana_text.visible = False
         self.canvas.update()
 
     # ---------- subset boxes ----------
@@ -908,6 +1029,17 @@ class PointCloudViewer:
         ext[2] *= self.z_scale
         self.camera.center = tuple(float(v) for v in center)
         self.camera.scale_factor = float(max(np.linalg.norm(ext), 1e-3))
+        self.canvas.update()
+
+    def look_at(self, x, y, z=None, extent=50.0):
+        """Centre the camera on a world position (z None → terrain height there)."""
+        if self.origin is None:
+            return
+        lx, ly = x - self.origin[0], y - self.origin[1]
+        lz = (z - self.origin[2]) if z is not None and np.isfinite(z) else float(self._drape_z(np.array([lx]),
+                                                                                              np.array([ly]))[0])
+        self.camera.center = (float(lx), float(ly), float(lz * self.z_scale))
+        self.camera.scale_factor = float(max(extent, 1.0))
         self.canvas.update()
 
     def set_view(self, name):

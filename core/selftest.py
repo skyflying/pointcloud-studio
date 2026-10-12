@@ -111,7 +111,14 @@ def run(app=None):
         p = os.path.join(tmp, "t.tif")
         export_dem(ctx["dem"], p, crs=CRS.from_epsg(3826))
         with rasterio.open(p) as ds:
-            assert ds.crs.to_epsg() == 3826
+            epsg = ds.crs.to_epsg() if ds.crs else None
+            wkt = ds.crs.to_wkt()[:60] if ds.crs else None
+        if epsg != 3826:
+            from rasterio.env import PROJDataFinder
+            env = {k: os.environ[k] for k in ("PROJ_DATA", "PROJ_LIB", "GDAL_DATA") if k in os.environ}
+            raise AssertionError(f"read back EPSG={epsg} (expected 3826), CRS={wkt!r}; "
+                                 f"GDAL {rasterio.__gdal_version__}; rasterio proj_data="
+                                 f"{PROJDataFinder().search_wheel()}; env={env or 'none'}")
         return "EPSG:3826 (rasterio/GDAL + pyproj/PROJ)"
 
     def landxml():
@@ -321,11 +328,109 @@ def run(app=None):
                               f"surfaces={[(k, l.V is not None) for k, l in v.surfaces.items()]})")
         return f"OpenGL render ok, coverage {cover:.2f}"
 
+    def cable_analyses():
+        """Synthetic cable with known answers: DoB, free span (both methods), rock berm."""
+        from core import cable
+        from core.pointcloud import PointCloud
+        from core.route import Route
+        from core.surface import Dem
+        X0, Y0 = 200_000.0, 2_600_000.0
+        flat = Dem(np.full((60, 1100), -20.0, np.float32), X0 - 50, Y0 + 30, 1.0, "t")
+        ch = np.arange(0, 1001.0)
+        xy = np.column_stack([X0 + ch, np.full_like(ch, Y0)])
+        # DoB: cable top −21.5 (DoB 1.5 = target), −20.8 between 300 and 400 m (DoB 0.8)
+        r = Route("C", xy, kp=10 + ch / 1000, z=np.where((ch >= 300) & (ch <= 400), -20.8, -21.5))
+        d = cable.dob_analysis(r, flat, step=1.0, target=1.5)
+        g = d["segments"]
+        assert len(g) == 1 and abs(g[0]["length"] - 101) <= 2 and abs(g[0]["dob_min"] - 0.8) < 1e-6, g
+        # free span A: 20 m trough (−21) under a cable lying on the seabed (top −19.8, Ø 0.2) → gap 1.0
+        z = np.full((60, 1100), -20.0, np.float32)
+        xs = X0 - 50 + np.arange(1100) + 0.5
+        z[:, (xs >= X0 + 500) & (xs <= X0 + 520)] = -21.0
+        r2 = Route("C2", xy, kp=10 + ch / 1000, z=np.full_like(ch, -19.8))
+        a = cable.free_span_profile(r2, Dem(z, X0 - 50, Y0 + 30, 1.0, "t"), diameter=0.2, gap_min=0.1, len_min=10)
+        sp = [s for s in a["segments"] if s["flag"] == "SPAN"]
+        assert len(sp) == 1 and abs(sp[0]["length"] - 20) <= 2 and abs(sp[0]["gap_max"] - 1.0) < 0.01, a["segments"]
+        # free span B (points only): 15 m trough (−20.8) across the corridor, cable crest at −19.8, 0.3 m off route
+        rng = np.random.default_rng(3)
+        n = 300_000
+        px, py = rng.uniform(X0, X0 + 1000, n), rng.uniform(Y0 - 5, Y0 + 5, n)
+        pz = np.where((px >= X0 + 600) & (px <= X0 + 615), -20.8, -20.0) + rng.normal(0, 0.02, n)
+        cx = rng.uniform(X0, X0 + 1000, 30_000)
+        cloud = PointCloud(np.column_stack([np.r_[px, cx], np.r_[py, Y0 + 0.3 + rng.normal(0, 0.03, 30_000)],
+                                            np.r_[pz, -19.8 + rng.normal(0, 0.01, 30_000)]]))
+        rb = Route("R", np.array([[X0, Y0], [X0 + 1000, Y0]]), kp=np.array([10.0, 11.0]))
+        b = cable.free_span_points(rb, cloud, diameter=0.2, gap_min=0.1, len_min=10, search=1.5, side=3.0)
+        sp = [s for s in b["segments"] if s["flag"] == "SPAN"]
+        assert len(sp) == 1 and abs(sp[0]["length"] - 15) <= 2 and abs(sp[0]["gap_max"] - 0.8) < 0.1, b["segments"]
+        # rock berm: template crest 2 m, height 1 m, 1:3, KP 10.2–10.4 on a flat seabed → 500 m³ per 100 m body;
+        # as-built 0.4 m low between 300 and 320 m → one under-filled centre-line segment of ~20 m
+        t = cable.berm_template(flat, rb, 10.2, 10.4, crest_width=2, height=1, slope_n=3, cell=0.25, smooth=0)
+        D = t["design"]
+        A = D.z.copy()
+        xs = D.x0 + (np.arange(A.shape[1]) + 0.5) * D.cell
+        cols = (xs >= X0 + 300) & (xs <= X0 + 320)
+        A[:, cols] = np.where(A[:, cols] > -19.55, A[:, cols] - 0.4, A[:, cols])
+        c = cable.berm_check(Dem(A, D.x0, D.ytop, D.cell, "a"), D, rb, 10.2, 10.4, pre=flat, half_width=6, tol=0.1,
+                             step=0.5, bin_m=100)
+        body = [x for x in c["bins"] if abs(x["kp_from"] - 10.2) < 1e-9][0]["design_m3"]
+        assert abs(body - 500) / 500 < 0.03, body
+        assert len(c["segments"]) == 1 and abs(c["segments"][0]["length"] - 20) <= 2, c["segments"]
+        return (f"DoB 0.8 m over {g[0]['length']:.0f} m · span A {a['segments'][0]['length']:.0f} m / gap "
+                f"{a['segments'][0]['gap_max']:.2f} m · span B {sp[0]['length']:.0f} m / gap {sp[0]['gap_max']:.2f} m"
+                f" · berm {body:.0f} m³ per 100 m")
+
+    def scour_and_sandwaves():
+        """Cone-shaped scour hole (2.0 → 2.5 m in two years) and sand waves (λ 200 m, 10 m in 2 years)."""
+        from core import sandwave, scour
+        from core.route import Route
+        from core.structures import Structures
+        from core.surface import Dem
+        X0, Y0 = 200_000.0, 2_600_000.0
+
+        def hole(maxd):
+            n, c = 400, 0.5
+            x0, ytop = X0, Y0 + 200
+            xs = x0 + (np.arange(n) + 0.5) * c
+            ys = ytop - (np.arange(n) + 0.5) * c
+            X, Y = np.meshgrid(xs, ys)
+            r = np.hypot(X - (X0 + 100), Y - (Y0 + 100))
+            d = np.where((r >= 4) & (r <= 14), maxd * (1 - (r - 4) / 10), 0.0)
+            return Dem((-20 - d).astype(np.float32), x0, ytop, c, "s")
+        S = Structures(["WTG01"], np.array([[X0 + 100, Y0 + 100]]), [8.0])
+        res = scour.scour_analysis(S, [0], [{"name": "a", "date": "2023-01-01", "obj": hole(2.0)},
+                                            {"name": "b", "date": "2025-01-01", "obj": hole(2.5)}],
+                                   {"mode": "farfield", "ff_in": 8, "ff_out": 10}, r_max=5, threshold=0.5)
+        r1, r2 = res["table"]
+        assert abs(r1["max_depth"] - 2.0) < 0.1 and abs(r1["extent"] - 11.5) < 0.6, r1
+        assert abs(r2["max_depth_rate"] - 0.25) < 0.05, r2
+        # sand waves moving 10 m towards 70° in two years (oblique to an east-west route)
+        c, nx, ny = 1.0, 1600, 300
+        xs = X0 + (np.arange(nx) + 0.5) * c
+        ys = Y0 + 150 - (np.arange(ny) + 0.5) * c
+        X, Y = np.meshgrid(xs, ys)
+        k = np.array([np.sin(np.radians(70)), np.cos(np.radians(70))])
+
+        def waves(shift):
+            ph = ((X - X0) * k[0] + (Y - Y0) * k[1] - shift) / 200.0
+            return Dem((-25 + 0.002 * (X - X0) + np.cos(2 * np.pi * ph)).astype(np.float32), X0, Y0 + 150, c, "w")
+        rt = Route("R", np.array([[X0 + 100, Y0], [X0 + 1500, Y0]]), kp=np.array([0.1, 1.5]))
+        eps = [{"name": "a", "date": "2022-01-01", "obj": waves(0.0)}, {"name": "b", "date": "2024-01-01",
+                                                                         "obj": waves(10.0)}]
+        m = sandwave.migration(rt, eps, window=150, spacing=150, max_shift=40, hp_len=400, method="2d")["summary"]
+        assert abs(m["rate_median"] - 5.0) < 0.3 and abs(m["azimuth_median"] - 70) < 3, m
+        p = sandwave.migration(rt, eps, window=150, spacing=150, max_shift=40, hp_len=400, method="profile")["summary"]
+        assert abs(p["rate_along_median"] - 5.0 / np.sin(np.radians(70))) < 0.3, p
+        return (f"scour {r1['max_depth']:.2f} → {r2['max_depth']:.2f} m, extent {r1['extent']:.1f} m · sand waves "
+                f"{m['rate_median']:.2f} m/yr towards {m['azimuth_median']:.0f}° (true 5.00 / 70°)")
+
     for name, fn in (("generate LAZ (laspy + lazrs)", make_data), ("read LAZ", read_laz),
                      ("text export / import", text_roundtrip), ("TIN (Delaunay)", tin), ("DEM (TIN, shoal)", dem),
                      ("GeoTIFF with CRS", geotiff), ("LandXML", landxml), ("LAS export", las_with_crs),
                      ("cross-section", section), ("reject as Class 7", class7_reject), ("auto filter", auto_filter), ("routes (SHP / RPL)", routes), ("volumes", volumes), ("land classification", land_classification), ("earthworks design", earthworks), ("contours (SHP / DXF)", contours),
                      ("CRS search / reprojection", crs_and_reprojection),
+                     ("cable DoB / free span / rock berm", cable_analyses),
+                     ("scour / sand-wave migration", scour_and_sandwaves),
                      ("project save / open", project_roundtrip), ("3D render (VisPy/OpenGL)", render)):
         step(name, fn)
 

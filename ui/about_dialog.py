@@ -89,6 +89,7 @@ SHORTCUTS = [
                        ("Ctrl+M", "Mark subset complete"), ("Ctrl+F", "Auto filter"), ("Ctrl+K", "Classify points"), ("Shift / Ctrl + drag", "Add / subtract selection")]),
     ("Project", [("Ctrl+S · Ctrl+Shift+S", "Save project · Save as"), ("Ctrl+Shift+O", "Add data")]),
     ("Surface", [("Ctrl+T", "Create TIN"), ("Ctrl+G", "Create DEM")]),
+    ("Cable", [("Ctrl+Shift+B", "Depth of burial · free spans · rock berm (tabs)")]),
     ("Section", [("S", "Section mode"), ("Click · Double-click / Enter", "Add vertex · Finish"),
                  ("Backspace · Esc", "Remove last vertex · Cancel"), ("Drag vertex", "Edit line"),
                  ("Profile: Wheel · Shift+Wheel", "Zoom · Vertical exaggeration")]),

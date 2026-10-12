@@ -281,6 +281,9 @@ class ProjectMixin:
         self.sections = []
         self.active_section = -1
         self.profile_dock.hide()
+        self._cable_result = None
+        self._seabed_result = None
+        self.viewer.set_analysis_overlay()
         self.subset = None
         self.subset_route = None
         self.subset_done = []
@@ -418,7 +421,7 @@ class ProjectMixin:
         if ds is None:
             return
         ds.visible = bool(on)
-        if ds.kind == "route":
+        if ds.kind in ("route", "structure"):
             self._show_routes()
             return
         if ds.kind == "contour":
@@ -481,7 +484,11 @@ class ProjectMixin:
         if ds is None:
             return
         keep = self.viewer.bbox
-        self.viewer.bbox = ds.bbox()
+        lo, hi = ds.bbox()
+        if not (np.isfinite(lo[2]) and np.isfinite(hi[2])):          # routes, structures: no Z
+            lo, hi = lo.copy(), hi.copy()
+            lo[2], hi[2] = (keep[0][2], keep[1][2]) if keep is not None else (0.0, 0.0)
+        self.viewer.bbox = (lo, hi)
         self.viewer.fit_view()
         self.viewer.bbox = keep
 
@@ -695,11 +702,21 @@ def _load_project_sources(doc, project_path, sources, progress=None):
     n = max(len(doc["datasets"]), 1)
     for i, e in enumerate(doc["datasets"]):
         try:
+            if e["kind"] == "structure":
+                from core.structures import Structures
+                sd = e["structures"]
+                out.append((e, Structures(sd["names"], np.asarray(sd["xy"], float), sd["diameter"]), None))
+                if progress:
+                    progress((i + 1) / n)
+                continue
             if e["kind"] == "route":
                 from core.route import Route
                 rd = e["route"]
+                def _arr(v):
+                    return None if v is None else np.array([np.nan if a is None else a for a in v], float)
                 obj = Route(rd.get("name", e["name"]), np.asarray(rd["xy"], float),
-                            None if rd.get("kp") is None else np.asarray(rd["kp"], float), rd.get("start_kp", 0.0))
+                            None if rd.get("kp") is None else np.asarray(rd["kp"], float), rd.get("start_kp", 0.0),
+                            z=_arr(rd.get("z")), dob=_arr(rd.get("dob")))
                 out.append((e, obj, None))
                 if progress:
                     progress((i + 1) / n)
@@ -882,7 +899,7 @@ class ProjectFileMixin:
             return
         sources, skipped = {}, []
         for e in doc["datasets"]:
-            if e["kind"] == "route" or (e.get("path") is None and "data" in e):
+            if e["kind"] in ("route", "structure") or (e.get("path") is None and "data" in e):
                 continue                                  # stored in the project file itself
             if e["kind"] != "points" and e.get("derived_from") is not None and "data" in e:
                 continue
@@ -922,7 +939,8 @@ class ProjectFileMixin:
             ds = Dataset(e["name"], e["kind"], obj, src, crs=crsmod.from_text(e.get("crs")),
                          source_crs=crsmod.from_text(e.get("source_crs")), visible=e.get("visible", True),
                          opacity=e.get("opacity", 1.0), import_opts=e.get("import_opts") or {},
-                         edit_version=e.get("edit_version", 0), z_flipped=bool(e.get("z_flipped", False)))
+                         edit_version=e.get("edit_version", 0), z_flipped=bool(e.get("z_flipped", False)),
+                         survey_date=e.get("survey_date"))
             proj.add(ds)
             idmap[e["id"]] = ds.id
             if e.get("derived_from") is not None:

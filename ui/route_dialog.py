@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import os
 
+import numpy as np
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDoubleSpinBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPlainTextEdit,
+    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPlainTextEdit,
     QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
@@ -127,6 +129,26 @@ class RouteImportDialog(QDialog):
         if self.is_shp:
             self.cmb_unit.setEnabled(False)
 
+        # cable profile (top-of-cable Z) — CSV: column roles; Shapefile: PolyLineZ values
+        v.addWidget(_section("Cable profile (optional)"))
+        if self.is_shp:
+            has_z = any(r.meta.get("shp_z") is not None for r in self.shp_routes)
+            self.chk_shpz = QCheckBox("Use the Z values of the shapefile as cable-top level")
+            self.chk_shpz.setChecked(has_z)
+            self.chk_shpz.setEnabled(has_z)
+            self.chk_shpz_depth = QCheckBox("Z values are depths (positive down)")
+            self.chk_shpz_depth.setEnabled(has_z)
+            for w in (self.chk_shpz, self.chk_shpz_depth):
+                w.toggled.connect(self._update)
+                v.addWidget(w)
+            if not has_z:
+                v.addWidget(_muted("This shapefile has no Z values — it is imported as a route only."))
+        else:
+            v.addWidget(_muted("Map a column to <b>Cable top (elevation)</b> or <b>Cable top (depth, + down)</b> "
+                               "to import a cable profile (SBI / TSS / ROV top-of-cable data) for depth-of-burial "
+                               "and free-span analysis; <b>DoB (reported)</b> keeps the survey's own burial values "
+                               "for comparison."))
+
         self.lbl = QLabel(" ")
         self.lbl.setWordWrap(True)
         v.addWidget(self.lbl)
@@ -227,8 +249,12 @@ class RouteImportDialog(QDialog):
     def _parse(self):
         if self.is_shp:
             routes = [r for i, r in enumerate(self.shp_routes) if self.lst.item(i).checkState() == Qt.Checked]
+            use_z = self.chk_shpz.isChecked()
+            sign = -1.0 if self.chk_shpz_depth.isChecked() else 1.0
             for r in routes:
                 r.start_kp = self.sp_kp0.value()
+                zz = r.meta.get("shp_z")
+                r.z = sign * zz if (use_z and zz is not None) else None
             return routes
         st = self.sp_start.value() - 1
         routes, _ = rr.read_route_table(self.path, st, self.cmb_delim.currentData(),
@@ -250,7 +276,12 @@ class RouteImportDialog(QDialog):
             parts = []
             for r in self.routes[:6]:
                 k0, k1 = r.kp_range()
-                parts.append(f"<b>{r.name}</b>: {len(r.xy)} vertices, KP {k0:,.3f} – {k1:,.3f}")
+                extra = ""
+                if r.z is not None:
+                    extra = f", cable top {np.nanmin(r.z):,.2f} … {np.nanmax(r.z):,.2f} m"
+                if r.dob is not None:
+                    extra += ", reported DoB"
+                parts.append(f"<b>{r.name}</b>: {len(r.xy)} vertices, KP {k0:,.3f} – {k1:,.3f}{extra}")
             more = f" … (+{len(self.routes) - 6})" if len(self.routes) > 6 else ""
             self.lbl.setText(f"<span style='color:{C['success']}'>●</span>  {len(self.routes)} route(s): "
                              + " · ".join(parts) + more)

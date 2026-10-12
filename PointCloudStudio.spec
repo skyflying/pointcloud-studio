@@ -36,6 +36,14 @@ def _safe(fn, pkg):
     return fn(pkg) if _have(pkg) else []
 
 
+# ---- macOS: wheels that bundle a library under the same file name (pyproj and rasterio both ship
+# libproj.25.x.dylib; rasterio's copy has renamed symbols) would share one copy inside the app →
+# "Symbol not found: _proj_context_create". Give them distinct names first (see tools/mac_fix_dylibs.py).
+if sys.platform == "darwin":
+    sys.path.insert(0, os.path.abspath("tools"))
+    import mac_fix_dylibs
+    mac_fix_dylibs.fix()
+
 datas = [("ui/assets", "ui/assets")]
 datas += collect_data_files("vispy")               # GLSL shaders, fonts, colormaps
 datas += _safe(collect_data_files, "pyproj")       # proj.db (EPSG definitions)

@@ -16,7 +16,7 @@ from core.surface import Dem, Tin
 from core.trash import Batch
 
 FORMAT = "PointCloud Studio project"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2          # 2: structures datasets (0.1.15); files without them are still written as 1
 
 
 def data_dir(path):
@@ -42,7 +42,8 @@ def save_project(path, project, sections=(), view=None, subsets=None):
         entry = {"id": d.id, "name": d.name, "kind": d.kind, "visible": d.visible, "opacity": d.opacity,
                  "z_flipped": bool(getattr(d, "z_flipped", False)),
                  "crs": crsmod.to_text(d.crs), "source_crs": crsmod.to_text(d.source_crs),
-                 "import_opts": d.import_opts, "derived_from": d.derived_from, "edit_version": d.edit_version}
+                 "import_opts": d.import_opts, "derived_from": d.derived_from, "edit_version": d.edit_version,
+                 "survey_date": getattr(d, "survey_date", None)}
         if d.path:
             entry["path"] = os.path.abspath(d.path)
             try:
@@ -53,7 +54,15 @@ def save_project(path, project, sections=(), view=None, subsets=None):
         if d.kind == "route":                               # small: stored inline
             r = d.obj
             entry["route"] = {"xy": r.xy.tolist(), "kp": None if r.kp is None else r.kp.tolist(),
-                              "start_kp": r.start_kp, "name": r.name}
+                              "start_kp": r.start_kp, "name": r.name,
+                              "z": None if r.z is None else [None if not np.isfinite(v) else float(v) for v in r.z],
+                              "dob": None if r.dob is None else [None if not np.isfinite(v) else float(v)
+                                                                 for v in r.dob]}
+            out.append(entry)
+            continue
+        if d.kind == "structure":                           # small: stored inline
+            s = d.obj
+            entry["structures"] = {"names": list(s.names), "xy": s.xy.tolist(), "diameter": s.diameter.tolist()}
             out.append(entry)
             continue
         if d.kind == "contour":
@@ -109,7 +118,10 @@ def save_project(path, project, sections=(), view=None, subsets=None):
                 os.remove(os.path.join(ddir, f))
             except OSError:
                 pass
-    doc = {"format": FORMAT, "format_version": FORMAT_VERSION, "saved": datetime.now().isoformat(timespec="seconds"),
+    # version 1 readers (≤ 0.1.14) cannot handle structure datasets → mark such files as version 2 so an
+    # older program reports "saved by a newer version" instead of failing
+    fv = 2 if any(d.kind == "structure" for d in project.datasets) else 1
+    doc = {"format": FORMAT, "format_version": fv, "saved": datetime.now().isoformat(timespec="seconds"),
            "crs": crsmod.to_text(project.crs),
            "origin": None if project.origin is None else [float(v) for v in project.origin],
            "edit_id": project.edit_id, "datasets": out,

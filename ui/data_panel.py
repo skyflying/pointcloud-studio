@@ -12,7 +12,8 @@ from ui.icons import icon
 from ui.theme import C
 from ui.widgets import Card, muted
 
-KIND_COLOR = {"points": "#4c8dff", "grid": "#3ecf8e", "tin": "#ffd166", "route": "#4cc9f0", "contour": "#c9ced6"}
+KIND_COLOR = {"points": "#4c8dff", "grid": "#3ecf8e", "tin": "#ffd166", "route": "#4cc9f0", "contour": "#c9ced6",
+              "structure": "#ff9f43"}
 
 
 class DataCard(Card):
@@ -167,6 +168,8 @@ class DataCard(Card):
         if ds.kind == "route":
             m.addAction(icon("section"), "Section along route", lambda i=ds.id: cb.route_section(i))
             m.addAction(icon("subset"), "Subset editor along route", lambda i=ds.id: cb.route_subset(i))
+        elif ds.kind == "structure":
+            m.addAction("Scour monitoring…", lambda: cb.open_seabed_dialog(0))
         else:
             m.addAction(icon("export"), "Export…", lambda i=ds.id: cb.ds_export(i))
         if ds.kind in ("points", "grid"):
@@ -176,6 +179,8 @@ class DataCard(Card):
                          if hasattr(ds.obj, "source") else bool(getattr(ds, "z_flipped", False)))
             a.setToolTip("Use when the file stores depths as positive numbers (down +)")
             a.triggered.connect(lambda _=False, i=ds.id: cb.ds_flip_z(i))
+        if ds.kind in ("points", "grid", "tin"):
+            m.addAction("Survey date…", lambda i=ds.id: cb.ds_set_date(i))
         if ds.kind == "tin":
             a = m.addAction("Wireframe")
             a.setCheckable(True)
@@ -190,6 +195,8 @@ class DataCard(Card):
             info += f" · reprojected from EPSG:{crsmod.epsg_of(ds.source_crs) or '?'}"
         if getattr(ds, "z_flipped", False) or (hasattr(ds.obj, "source") and ds.obj.source.get("z_is_depth")):
             info += " · Z from depths"
+        if getattr(ds, "survey_date", None):
+            info += f" · surveyed {ds.survey_date}"
         if editing:
             info += " · editing"
         lab = muted(info)

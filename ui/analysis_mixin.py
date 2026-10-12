@@ -14,6 +14,30 @@ def layer_color(ds_id):
     return LAYER_COLORS[(ds_id - 1) % len(LAYER_COLORS)]
 
 
+def _cable_profile_layer(d, sec):
+    """Cable-top line of a cable profile in a section: route sampled every 0.5 m, kept where it lies
+    within the section corridor (along-route section → a line; cross-section → the crossing point)."""
+    from core import profile as prof
+    r = d.obj
+    ch = np.r_[np.arange(0.0, r.length, 0.5), r.length]
+    xy = r.xy_at(ch)
+    z = np.interp(ch, r.cum, r.z)
+    lo, hi = sec.xy.min(axis=0) - sec.width, sec.xy.max(axis=0) + sec.width
+    m = (xy[:, 0] >= lo[0]) & (xy[:, 0] <= hi[0]) & (xy[:, 1] >= lo[1]) & (xy[:, 1] <= hi[1]) & np.isfinite(z)
+    if not m.any():
+        return None
+    P = sec.xy
+    L = sec.seg_len
+    D = (P[1:] - P[:-1]) / np.maximum(L, 1e-12)[:, None]
+    sch, _off, dist = prof._project(xy[m], P[:-1], D, L, np.r_[0, np.cumsum(L)][:-1])
+    keep = dist <= max(sec.width, 0.5)
+    if not keep.any():
+        return None
+    o = np.argsort(sch[keep])
+    return {"name": f"{d.name} (cable top)", "color": "#ff9f43", "kind": "line" if keep.sum() >= 4 else "points",
+            "ch": sec.disp(sch[keep][o]), "z": z[m][keep][o]}
+
+
 class AnalysisMixin:
     def _init_analysis_state(self):
         self.volume_dialog = None
@@ -33,6 +57,10 @@ class AnalysisMixin:
 
     def _volume_context(self):
         from core.surface import Dem
+        if hasattr(self, "_cable_context"):
+            self._cable_context()
+        if hasattr(self, "_seabed_context"):
+            self._seabed_context()
         if self.volume_dialog is None and getattr(self, "design_dialog", None) is None:
             return
         surfs = [(d.id, d.name, d.obj.cell if isinstance(d.obj, Dem) else None)
@@ -236,6 +264,10 @@ class AnalysisMixin:
                 if len(ch):
                     layers.append({"name": d.name, "color": layer_color(d.id), "kind": "line",
                                    "ch": sec.disp(ch), "z": z})
+            elif d.kind == "route" and d.obj.z is not None:
+                lay = _cable_profile_layer(d, sec)
+                if lay is not None:
+                    layers.append(lay)
             elif d.kind == "points" and d.obj is not profile_pc:
                 r = prof.corridor_points(d.obj.xyz, d.obj.active_indices(), sec)
                 if len(r["idx"]):
