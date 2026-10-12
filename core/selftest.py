@@ -424,6 +424,91 @@ def run(app=None):
         return (f"scour {r1['max_depth']:.2f} → {r2['max_depth']:.2f} m, extent {r1['extent']:.1f} m · sand waves "
                 f"{m['rate_median']:.2f} m/yr towards {m['azimuth_median']:.0f}° (true 5.00 / 70°)")
 
+    def vector_formats():
+        """Points, 3D lines and polygons with a hole → every vector format → read back (mm accuracy)."""
+        from core import crs as crsmod
+        from fileio import vector_io as V
+        c = crsmod.from_epsg(3826)
+        X0, Y0 = 200_000.0, 2_600_000.0
+        ring = np.array([[X0, Y0], [X0 + 100, Y0], [X0 + 100, Y0 + 80], [X0, Y0 + 80]])
+        hole = np.array([[X0 + 40, Y0 + 30], [X0 + 40, Y0 + 50], [X0 + 60, Y0 + 50], [X0 + 60, Y0 + 30]])
+        groups = {"poly": [{"type": "Polygon", "parts": [ring, hole], "attrs": {"name": "pad", "v": 1.5}}],
+                  "line": [{"type": "LineString", "parts": [np.array([[X0, Y0, -20.0], [X0 + 500, Y0 + 10, -21.5]])],
+                            "attrs": {"name": "C1"}}],
+                  "pt": [{"type": "Point", "parts": [np.array([[X0 + 10, Y0 + 20]])], "attrs": {"name": "W1"}}]}
+        done = []
+        for ext in (".shp", ".gpkg", ".geojson", ".kml", ".dxf"):
+            for g, fs in groups.items():
+                p_ = os.path.join(tmp, f"v_{g}{ext}")
+                V.write(p_, fs, crs=c)
+                back, crs, _i = V.read(p_)
+                back = V.reproject(back, crs, c) if crs is not None else back
+                a_ = np.vstack([q[:, :2] for f in fs for q in f["parts"]])
+                b_ = np.vstack([q[:, :2] for f in back for q in f["parts"]])
+                err = max(np.min(np.hypot(b_[:, 0] - x, b_[:, 1] - y)) for x, y in a_)
+                assert err < 0.01, (ext, g, err)
+            done.append(ext)
+        # regression: a small polygon whose last vertex is 5 m from the first (was treated as closed)
+        from core.volume import polygon_mask
+        P_ = np.array([[X0, Y0], [X0 + 10, Y0], [X0 + 10, Y0 + 10], [X0, Y0 + 5]])
+        xs_ = X0 + np.arange(0, 10, 0.5) + 0.25
+        ys_ = Y0 + 10 - np.arange(0, 10, 0.5) - 0.25
+        area = polygon_mask(xs_, ys_, P_).sum() * 0.25
+        assert abs(area - 75.0) < 1e-6, area
+        # regression: DXF HATCH polygons (how GDAL / many CAD programs store areas)
+        hp = os.path.join(tmp, "hatch.dxf")
+        with open(hp, "w") as fh:
+            fh.write("0\nSECTION\n2\nENTITIES\n0\nHATCH\n8\nAREAS\n10\n0\n20\n0\n30\n0\n2\nSOLID\n70\n1\n71\n0\n"
+                     "91\n1\n92\n2\n72\n0\n73\n1\n93\n4\n10\n0\n20\n0\n10\n10\n20\n0\n10\n10\n20\n10\n10\n0\n"
+                     "20\n10\n97\n0\n75\n0\n76\n1\n98\n0\n0\nENDSEC\n0\nEOF\n")
+        hf, _c, _i = V.read(hp)
+        assert len(hf) == 1 and hf[0]["type"] == "Polygon" and len(hf[0]["parts"][0]) == 4, hf
+        return "read/write " + " ".join(done) + " (< 1 cm) · small-polygon mask 75.0 m² · DXF HATCH"
+
+    def land_analyses():
+        """Analytic answers: slope / aspect, DoD volumes, stockpile cone, road fill, inundation, clearance."""
+        from core import land, terrain
+        from core.pointcloud import PointCloud
+        from core.route import Route
+        from core.surface import Dem
+        X0, Y0 = 300_000.0, 2_700_000.0
+
+        def grid(f, n=200, c=1.0):
+            xs = X0 + (np.arange(n) + 0.5) * c
+            ys = Y0 + n * c - (np.arange(n) + 0.5) * c
+            X, Y = np.meshgrid(xs, ys)
+            return Dem(f(X - X0, Y - Y0).astype(np.float32), X0, Y0 + n * c, c, "t")
+        L = dict(terrain.terrain_products(grid(lambda x, y: 100 - np.tan(np.radians(10)) * x))["layers"])
+        sl, asp = float(np.nanmedian(L["Slope (°)"].cvals)), float(np.nanmedian(L["Aspect (° from N)"].cvals))
+        assert abs(sl - 10) < 0.05 and abs(asp - 90) < 0.5, (sl, asp)
+        d = terrain.dod(grid(lambda x, y: 0 * x), grid(lambda x, y: np.where(np.hypot(x - 60, y - 100) < 10, 1.0, 0)))
+        dep = d["tables"]["Volumes"][0]["deposition_m3"]
+        assert abs(dep - np.pi * 100) / (np.pi * 100) < 0.03, dep
+        cone = grid(lambda x, y: 0.02 * x + np.clip(5 * (1 - np.hypot(x - 100, y - 100) / 10), 0, None), n=800, c=0.25)
+        t = np.linspace(0, 2 * np.pi, 60, endpoint=False)
+        ring = np.column_stack([X0 + 100 + 12 * np.cos(t), Y0 + 100 + 12 * np.sin(t)])
+        v = land.stockpile_volumes([("s", None, cone)], [("A", ring)])["tables"]["Volumes"][0]["volume_m3"]
+        assert abs(v - np.pi * 100 * 5 / 3) < 3, v
+        rt = Route("CL", np.array([[X0 + 100, Y0 + 200], [X0 + 300, Y0 + 200]]), kp=np.array([0.0, 0.2]))
+        rd = land.road_design(grid(lambda x, y: 0 * x, n=400), rt, grade="pvi", pvi=[(0.0, 1.0), (0.2, 1.0)],
+                              half_width=4, crossfall=0.0, fill_n=2.0, cell=0.25, bin_m=50)
+        fill = sum(r["fill_m3"] for r in rd["tables"]["Earthworks per interval"])
+        assert abs(fill - 2000) < 20, fill
+        h = land.hydrology(grid(lambda x, y: 0.1 * np.abs(x - 100) + 0.05 * y), level=3.0, seed=(X0 + 100, Y0 + 2))
+        ia = h["tables"]["Inundation"][0]["area_m2"]
+        assert abs(ia - 1800) < 60, ia
+        rng = np.random.default_rng(1)
+        P = np.column_stack([X0 + rng.uniform(0, 100, 20000), Y0 + 50 + rng.uniform(-10, 10, 20000), np.zeros(20000)])
+        cls = np.full(20000, 2)
+        tr = (P[:, 0] > X0 + 40) & (P[:, 0] < X0 + 50) & (np.abs(P[:, 1] - Y0 - 50) < 3)
+        P[tr, 2], cls[tr] = 7.0, 5
+        pc = PointCloud(P)
+        pc.attrs["Classification"] = cls.astype(np.uint8)
+        segs = land.clearance(pc, np.array([[X0, Y0 + 50, 10.0], [X0 + 100, Y0 + 50, 10.0]]), limit=5.0)["tables"]["Segments"]
+        assert len(segs) == 1 and abs(segs[0]["min_clearance"] - 3.0) < 0.05, segs
+        return (f"slope {sl:.2f}° / aspect {asp:.1f}° · DoD {dep:.0f} m³ · stockpile {v:.1f} m³ (523.6) · road fill "
+                f"{fill:.0f} m³ (2000) · inundation {ia:.0f} m² (1800) · clearance {segs[0]['min_clearance']:.2f} m")
+
     for name, fn in (("generate LAZ (laspy + lazrs)", make_data), ("read LAZ", read_laz),
                      ("text export / import", text_roundtrip), ("TIN (Delaunay)", tin), ("DEM (TIN, shoal)", dem),
                      ("GeoTIFF with CRS", geotiff), ("LandXML", landxml), ("LAS export", las_with_crs),
@@ -431,6 +516,8 @@ def run(app=None):
                      ("CRS search / reprojection", crs_and_reprojection),
                      ("cable DoB / free span / rock berm", cable_analyses),
                      ("scour / sand-wave migration", scour_and_sandwaves),
+                     ("vector formats (SHP/GPKG/GeoJSON/KML/DXF)", vector_formats),
+                     ("land: terrain / change / stockpile / road / hydro / clearance", land_analyses),
                      ("project save / open", project_roundtrip), ("3D render (VisPy/OpenGL)", render)):
         step(name, fn)
 

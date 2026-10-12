@@ -248,22 +248,18 @@ class CableMixin:
         self.statusBar().showMessage("Saved " + ", ".join(os.path.basename(f) for f in files), 10000)
 
     def cable_export_shp(self):
-        import shapefile
+        from fileio import vector_io
         if self._cable_result is None:
             return
-        res, path = self._cable_base("Export segments (Shapefile)", f"cable_{self._cable_result['kind']}.shp",
-                                     "Shapefile (*.shp)")
+        res = self._cable_result
+        path, flt = QFileDialog.getSaveFileName(self, "Export segments (GIS)", f"cable_{res['kind']}.gpkg",
+                                                vector_io.WRITE_FILTER)
         if not path:
             return
+        path = vector_io.ext_from_filter(path, flt)
         st, se = res["st"], res["series"]
         pts = res.get("crest_xy", np.column_stack([st["x"], st["y"]]))
         zser = se.get("cable_top") if res["kind"] != "berm" else se.get("asbuilt")
-        base = os.path.splitext(path)[0]
-        w = shapefile.Writer(base, shapeType=shapefile.POLYLINEZ)
-        for name, typ, size, dec in (("TYPE", "C", 24, 0), ("KP_FROM", "N", 14, 4), ("KP_TO", "N", 14, 4),
-                                     ("LENGTH_M", "N", 14, 2), ("VALUE_M", "N", 14, 3), ("ROUTE", "C", 60, 0)):
-            w.field(name, typ, size, dec)
-        segs = []
         if res["kind"] == "dob":
             segs = [("DoB below target", g, g.get("dob_min")) for g in res["segments"]]
         elif res["kind"] == "span":
@@ -271,23 +267,29 @@ class CableMixin:
         else:
             segs = [("under-filled crest", g, g.get("error_min")) for g in res["segments"]]
             segs += [("cover below minimum", g, g.get("cover_min")) for g in res.get("cover_segments", [])]
-        n = 0
+        feats = []
         for typ, g, val in segs:
-            i0, i1 = g["i0"], max(g["i1"], g["i0"] + 1)
-            i1 = min(i1, len(pts) - 1)
+            i0 = g["i0"]
+            i1 = min(max(g["i1"], i0 + 1), len(pts) - 1)
             if i1 <= i0:
                 continue
             z = zser[i0:i1 + 1] if zser is not None else np.zeros(i1 - i0 + 1)
-            w.linez([[(float(x), float(y), float(zz) if np.isfinite(zz) else 0.0)
-                      for (x, y), zz in zip(pts[i0:i1 + 1], z)]])
-            w.record(typ, g["kp_from"], g["kp_to"], g["length"], float(val) if val is not None else None,
-                     res["route"][:60])
-            n += 1
-        w.close()
-        if self.project.crs is not None:
-            with open(base + ".prj", "w", encoding="ascii", errors="ignore") as f:
-                f.write(self.project.crs.to_wkt("WKT1_ESRI"))
-        self.statusBar().showMessage(f"Saved {os.path.basename(base)}.shp ({n} segment(s))", 8000)
+            feats.append({"type": "LineString",
+                          "parts": [np.column_stack([pts[i0:i1 + 1], np.nan_to_num(z)])],
+                          "attrs": {"TYPE": typ, "KP_FROM": g["kp_from"], "KP_TO": g["kp_to"], "LENGTH_M": g["length"],
+                                    "VALUE_M": float(val) if val is not None else None, "ROUTE": res["route"]}})
+        if not feats:
+            self.statusBar().showMessage("No segments to export", 6000)
+            return
+        try:
+            vector_io.write(path, feats, self.project.crs, layer=f"cable_{res['kind']}",
+                            fields=[("TYPE", "C"), ("KP_FROM", "N"), ("KP_TO", "N"), ("LENGTH_M", "N"),
+                                    ("VALUE_M", "N"), ("ROUTE", "C")])
+        except Exception as e:  # noqa: BLE001
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Export failed", f"{type(e).__name__}: {e}")
+            return
+        self.statusBar().showMessage(f"Saved {os.path.basename(path)} ({len(feats)} segment(s))", 8000)
 
     def cable_save_chart(self):
         if self.cable_dialog is None or self._cable_result is None:

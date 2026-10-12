@@ -46,7 +46,7 @@ def label_positions(line, spacing, min_len, chord=None):
 
 
 def _closed(line):
-    return len(line) > 3 and np.allclose(line[0, :2], line[-1, :2])
+    return len(line) > 3 and np.array_equal(line[0, :2], line[-1, :2])
 
 
 def write_shp(cs, path, crs=None, progress=None):
@@ -115,7 +115,17 @@ def write_dxf(cs, path, progress=None, labels=None):
 
 
 def export_contours(cs, path, crs=None, progress=None, labels=None):
-    if path.lower().endswith(".dxf"):
+    low = path.lower()
+    if low.endswith(".dxf"):
         write_dxf(cs, path, progress, labels)
-    else:
+    elif low.endswith(".shp"):
         write_shp(cs, path, crs, progress)
+    else:                                                  # GeoPackage, GeoJSON, KML
+        from fileio import vector_io
+        feats = [{"type": "LineString", "parts": [np.asarray(ln, float)],
+                  "attrs": {"ELEV": float(lev), "DEPTH": float(-lev),
+                            "TYPE": "zero" if abs(lev) < 1e-9 else ("major" if mj else "minor")}}
+                 for ln, lev, mj in zip(cs.lines, cs.levels, cs.major)]
+        vector_io.write(path, feats, crs, fields=[("ELEV", "N"), ("DEPTH", "N"), ("TYPE", "C")], layer="contours")
+        if progress:
+            progress(1.0)

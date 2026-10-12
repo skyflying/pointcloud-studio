@@ -15,38 +15,36 @@ ROUTE_ROLES = ["Easting (X)", "Northing (Y)", "Longitude", "Latitude", "KP", "Ro
 CABLE_ROLES = ("Cable top (elevation)", "Cable top (depth, + down)", "DoB (reported)")
 
 
-def read_shp(path):
-    """→ (routes, crs_guess, info). Polylines → one route per part; points → one route (in file order)."""
-    import shapefile
-    r = shapefile.Reader(path)
-    fields = [f[0] for f in r.fields[1:]]
-    name_field = next((f for f in fields if f.lower() in ("name", "route", "route_name", "cable", "id", "line")), None)
-    routes = []
+def read_shp(path, layer=None):
+    """Any vector file (Shapefile, GeoPackage, GeoJSON, KML/KMZ, GPX, DXF) → (routes, crs_guess, info).
+    Lines → one route per line; points (≥ 2) → one route in file order. 3D lines keep their Z
+    (offered as cable-top level)."""
+    from fileio import vector_io
+    feats, crs, vinfo = vector_io.read(path, layer)
     base = os.path.splitext(os.path.basename(path))[0]
-    pts = []
-    for k, sr in enumerate(r.iterShapeRecords()):
-        sh = sr.shape
-        rec = sr.record.as_dict() if hasattr(sr.record, "as_dict") else {}
-        label = str(rec.get(name_field)) if name_field and rec.get(name_field) not in (None, "") else f"{base} {k + 1}"
-        if sh.shapeType in (shapefile.POLYLINE, shapefile.POLYLINEZ, shapefile.POLYLINEM):
-            parts = list(sh.parts) + [len(sh.points)]
-            for j in range(len(sh.parts)):
-                xy = np.asarray(sh.points[parts[j]:parts[j + 1]], dtype=np.float64)[:, :2]
-                if len(xy) >= 2:
-                    nm = label if len(sh.parts) == 1 else f"{label} part {j + 1}"
-                    zz = None
-                    if sh.shapeType == shapefile.POLYLINEZ and getattr(sh, "z", None) is not None:
-                        zz = np.asarray(sh.z[parts[j]:parts[j + 1]], dtype=np.float64)
-                        if len(zz) != len(xy) or not np.any(np.abs(zz) > 1e-9):
-                            zz = None                         # all-zero Z = 2D line stored as PolyLineZ
-                    routes.append(Route(nm, xy, meta={"attributes": rec, "shp_z": zz}))
-        elif sh.shapeType in (shapefile.POINT, shapefile.POINTZ, shapefile.POINTM):
-            pts.append(sh.points[0][:2])
-    if pts and len(pts) >= 2:
+    routes, pts = [], []
+    keys = ("name", "route", "route_name", "cable", "id", "line", "label")
+    for k, f in enumerate(feats):
+        rec = f["attrs"]
+        low = {str(a).lower(): a for a in rec}
+        nf = next((low[x] for x in keys if x in low and rec[low[x]] not in (None, "")), None)
+        label = str(rec[nf]) if nf else f"{base} {k + 1}"
+        if f["type"] == "LineString":
+            p = f["parts"][0]
+            zz = None
+            if p.shape[1] >= 3:
+                zz = p[:, 2].astype(np.float64)
+                if not np.any(np.abs(zz) > 1e-9):
+                    zz = None                                  # all-zero Z = a 2D line
+            routes.append(Route(label, p[:, :2], meta={"attributes": rec, "shp_z": zz}))
+        elif f["type"] == "Point":
+            pts.append(f["parts"][0][0, :2])
+    if len(pts) >= 2 and not routes:
         routes.append(Route(base, np.asarray(pts, float)))
-    prj = os.path.splitext(path)[0] + ".prj"
-    crs = crsmod.guess_from_prj(prj) if os.path.isfile(prj) else None
-    info = f"{len(r)} feature(s), {len(routes)} route(s)" + (", .prj found" if crs is not None else ", no .prj")
+    if crs is None and path.lower().endswith(".shp"):
+        prj = os.path.splitext(path)[0] + ".prj"
+        crs = crsmod.guess_from_prj(prj) if os.path.isfile(prj) else None
+    info = f"{vinfo} → {len(routes)} route(s)" + ("" if crs is not None else ", coordinate system not in the file")
     return routes, crs, info
 
 

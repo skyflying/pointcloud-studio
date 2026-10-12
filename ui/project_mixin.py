@@ -25,10 +25,12 @@ from ui.surface_dialogs import DemDialog, TinDialog
 LAS_EXT = (".las", ".laz")
 RASTER_EXT = (".tif", ".tiff", ".grd")
 TEXT_EXT = (".xyz", ".asc", ".txt", ".csv", ".pts")
-ALL_FILTER = ("All supported (*.pcsproj *.las *.laz *.xyz *.asc *.txt *.csv *.pts *.tif *.tiff *.grd);;"
+ALL_FILTER = ("All supported (*.pcsproj *.las *.laz *.xyz *.asc *.txt *.csv *.pts *.tif *.tiff *.grd "
+              "*.shp *.gpkg *.geojson *.kml *.kmz *.gpx *.dxf);;"
               "PointCloud Studio project (*.pcsproj);;"
               "Point clouds (*.las *.laz *.xyz *.asc *.txt *.csv *.pts);;"
-              "DEM grids (*.tif *.tiff *.asc *.grd *.xyz);;All files (*)")
+              "DEM grids (*.tif *.tiff *.asc *.grd *.xyz);;"
+              "Vector layers (*.shp *.gpkg *.geojson *.json *.kml *.kmz *.gpx *.dxf);;All files (*)")
 
 
 class ProjectMixin:
@@ -166,6 +168,10 @@ class ProjectMixin:
             self.load_path(self._load_queue.pop(0), add=True)
 
     def load_path(self, path, add=False):
+        from fileio.vector_io import is_vector
+        if is_vector(path):                       # GIS / CAD layers are added to the current project
+            self.import_vector_layer(path)
+            return self._next_in_queue()
         if not add and not self._confirm_discard("start a new project"):
             return
         ext = os.path.splitext(path)[1].lower()
@@ -283,6 +289,7 @@ class ProjectMixin:
         self.profile_dock.hide()
         self._cable_result = None
         self._seabed_result = None
+        self._land_result = None
         self.viewer.set_analysis_overlay()
         self.subset = None
         self.subset_route = None
@@ -421,7 +428,7 @@ class ProjectMixin:
         if ds is None:
             return
         ds.visible = bool(on)
-        if ds.kind in ("route", "structure"):
+        if ds.kind in ("route", "structure", "vector"):
             self._show_routes()
             return
         if ds.kind == "contour":
@@ -702,6 +709,12 @@ def _load_project_sources(doc, project_path, sources, progress=None):
     n = max(len(doc["datasets"]), 1)
     for i, e in enumerate(doc["datasets"]):
         try:
+            if e["kind"] == "vector":
+                from core.vector_layer import VectorLayer
+                out.append((e, VectorLayer(e["vector"]), None))
+                if progress:
+                    progress((i + 1) / n)
+                continue
             if e["kind"] == "structure":
                 from core.structures import Structures
                 sd = e["structures"]
@@ -899,7 +912,7 @@ class ProjectFileMixin:
             return
         sources, skipped = {}, []
         for e in doc["datasets"]:
-            if e["kind"] in ("route", "structure") or (e.get("path") is None and "data" in e):
+            if e["kind"] in ("route", "structure", "vector") or (e.get("path") is None and "data" in e):
                 continue                                  # stored in the project file itself
             if e["kind"] != "points" and e.get("derived_from") is not None and "data" in e:
                 continue

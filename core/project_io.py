@@ -60,6 +60,10 @@ def save_project(path, project, sections=(), view=None, subsets=None):
                                                                  for v in r.dob]}
             out.append(entry)
             continue
+        if d.kind == "vector":                              # stored inline (GeoJSON-like)
+            entry["vector"] = d.obj.to_json()
+            out.append(entry)
+            continue
         if d.kind == "structure":                           # small: stored inline
             s = d.obj
             entry["structures"] = {"names": list(s.names), "xy": s.xy.tolist(), "diameter": s.diameter.tolist()}
@@ -120,7 +124,7 @@ def save_project(path, project, sections=(), view=None, subsets=None):
                 pass
     # version 1 readers (≤ 0.1.14) cannot handle structure datasets → mark such files as version 2 so an
     # older program reports "saved by a newer version" instead of failing
-    fv = 2 if any(d.kind == "structure" for d in project.datasets) else 1
+    fv = 2 if any(d.kind in ("structure", "vector") for d in project.datasets) else 1
     doc = {"format": FORMAT, "format_version": fv, "saved": datetime.now().isoformat(timespec="seconds"),
            "crs": crsmod.to_text(project.crs),
            "origin": None if project.origin is None else [float(v) for v in project.origin],

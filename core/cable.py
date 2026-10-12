@@ -384,7 +384,7 @@ def _grid_around(route, c0, c1, margin, cell):
     lo, hi = xy.min(axis=0) - margin, xy.max(axis=0) + margin
     x0, ytop, nr, nc = grid_extent(lo[0], lo[1], hi[0], hi[1], cell, snap=True)
     if nr * nc > 40_000_000:
-        raise ValueError(f"The berm grid would have {nr * nc:,} cells — use a larger cell size or a shorter KP range")
+        raise ValueError(f"The analysis grid would have {nr * nc:,} cells — use a larger cell size or a shorter KP range")
     return x0, ytop, nr, nc
 
 

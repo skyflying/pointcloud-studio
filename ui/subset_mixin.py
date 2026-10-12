@@ -354,13 +354,12 @@ class RouteMixin:
     def import_route(self):
         from PySide6.QtWidgets import QDialog, QFileDialog
         from ui.route_dialog import RouteImportDialog
-        path, _ = QFileDialog.getOpenFileName(self, "Import route", "",
-                                              "Routes (*.shp *.csv *.txt *.rpl *.dat);;Shapefile (*.shp);;"
-                                              "CSV / text (*.csv *.txt *.rpl *.dat);;All files (*)")
+        from ui.vector_pick import pick_vector
+        path, layer = pick_vector(self, "Import route", "RPL / CSV / text (*.csv *.txt *.rpl *.dat)")
         if not path:
             return
         try:
-            dlg = RouteImportDialog(path, self.project.crs, self)
+            dlg = RouteImportDialog(path, self.project.crs, self, layer=layer)
         except Exception as e:  # noqa: BLE001
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.critical(self, "Cannot read route", f"{type(e).__name__}: {e}")
@@ -403,6 +402,7 @@ class RouteMixin:
     def _show_routes(self):
         self.viewer.set_routes([d.obj for d in self.project.of_kind("route", visible_only=True)])
         self.viewer.set_structures([d.obj for d in self.project.of_kind("structure", visible_only=True)])
+        self.viewer.set_vectors([d.obj for d in self.project.of_kind("vector", visible_only=True)])
 
     def route_section(self, ds_id):
         from core import profile as prof

@@ -51,7 +51,7 @@ def polygon_mask(xs, ys, poly_xy):
     X, Y = np.meshgrid(xs, ys)
     inside = np.zeros(X.shape, dtype=bool)
     P = np.asarray(poly_xy, float)
-    if len(P) >= 3 and np.allclose(P[0], P[-1]):
+    if len(P) >= 3 and np.array_equal(P[0], P[-1]):
         P = P[:-1]
     n = len(P)
     for i in range(n):

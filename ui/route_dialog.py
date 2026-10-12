@@ -33,10 +33,12 @@ def _muted(t):
 
 
 class RouteImportDialog(QDialog):
-    def __init__(self, path, project_crs, parent=None):
+    def __init__(self, path, project_crs, parent=None, layer=None):
         super().__init__(parent)
         self.path = path
-        self.is_shp = path.lower().endswith(".shp")
+        from fileio.vector_io import is_vector
+        self.is_shp = is_vector(path)          # any vector format (Shapefile, GeoPackage, GeoJSON, KML, GPX, DXF)
+        self.layer = layer
         self.project_crs = project_crs
         self.setWindowTitle(f"Import route — {os.path.basename(path)}")
         self.resize(960, 760 if not self.is_shp else 560)
@@ -64,7 +66,7 @@ class RouteImportDialog(QDialog):
         v.addWidget(self.lbl_reproj)
 
         if self.is_shp:
-            self.shp_routes, prj_crs, info = rr.read_shp(path)
+            self.shp_routes, prj_crs, info = rr.read_shp(path, layer)
             v.addWidget(_section("Features"))
             v.addWidget(_muted(info))
             self.lst = QListWidget()
@@ -76,7 +78,7 @@ class RouteImportDialog(QDialog):
             self.lst.itemChanged.connect(self._update)
             v.addWidget(self.lst, 1)
             self.crs = prj_crs
-            self.crs_note = "from the .prj file" if prj_crs is not None else ""
+            self.crs_note = "from the file" if prj_crs is not None else ""
         else:
             self.lines, self.encoding = read_preview(path)
             v.addWidget(_section("Raw preview"))
@@ -133,7 +135,7 @@ class RouteImportDialog(QDialog):
         v.addWidget(_section("Cable profile (optional)"))
         if self.is_shp:
             has_z = any(r.meta.get("shp_z") is not None for r in self.shp_routes)
-            self.chk_shpz = QCheckBox("Use the Z values of the shapefile as cable-top level")
+            self.chk_shpz = QCheckBox("Use the Z values of the lines as cable-top level")
             self.chk_shpz.setChecked(has_z)
             self.chk_shpz.setEnabled(has_z)
             self.chk_shpz_depth = QCheckBox("Z values are depths (positive down)")
@@ -142,7 +144,7 @@ class RouteImportDialog(QDialog):
                 w.toggled.connect(self._update)
                 v.addWidget(w)
             if not has_z:
-                v.addWidget(_muted("This shapefile has no Z values — it is imported as a route only."))
+                v.addWidget(_muted("The lines have no Z values — they are imported as routes only."))
         else:
             v.addWidget(_muted("Map a column to <b>Cable top (elevation)</b> or <b>Cable top (depth, + down)</b> "
                                "to import a cable profile (SBI / TSS / ROV top-of-cable data) for depth-of-burial "

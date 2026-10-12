@@ -22,13 +22,12 @@ class SeabedMixin:
         from core.project import Dataset
         from core.structures import reproject
         from ui.structure_dialog import StructureImportDialog
-        path, _ = QFileDialog.getOpenFileName(self, "Import structures", "",
-                                              "Structures (*.csv *.txt *.dat *.shp);;CSV / text (*.csv *.txt *.dat);;"
-                                              "Shapefile (*.shp);;All files (*)")
+        from ui.vector_pick import pick_vector
+        path, layer = pick_vector(self, "Import structures", "CSV / text (*.csv *.txt *.dat)")
         if not path:
             return
         try:
-            dlg = StructureImportDialog(path, self.project.crs, self)
+            dlg = StructureImportDialog(path, self.project.crs, self, layer=layer)
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Cannot read file", f"{type(e).__name__}: {e}")
             return
@@ -303,68 +302,53 @@ class SeabedMixin:
         self.statusBar().showMessage("Saved " + ", ".join(os.path.basename(f) for f in files), 10000)
 
     def seabed_export_shp(self):
-        import shapefile
+        from fileio import vector_io
         res = self._seabed_result
-        path = self._seabed_path("Export (Shapefile)", f"{res['kind'] if res else 'seabed'}.shp", "Shapefile (*.shp)")
+        if res is None:
+            return
+        path, flt = QFileDialog.getSaveFileName(self, "Export (GIS)", f"{res['kind']}.gpkg", vector_io.WRITE_FILTER)
         if not path:
             return
-        base = os.path.splitext(path)[0]
-        written = []
+        path = vector_io.ext_from_filter(path, flt)
+        base, ext = os.path.splitext(path)
+
+        def f(v):
+            return float(v) if v is not None and np.isfinite(v) else None
+        jobs = []
         if res["kind"] == "scour":
-            w = shapefile.Writer(base, shapeType=shapefile.POINT)
-            for nm, typ, sz, dec in (("NAME", "C", 40, 0), ("EPOCH", "C", 40, 0), ("DATE", "C", 10, 0),
-                                     ("DIAM_M", "N", 10, 2), ("MAXDEP_M", "N", 10, 3), ("R_MAX_M", "N", 10, 2),
-                                     ("BRG_MAX", "N", 6, 0), ("EXTENT_M", "N", 10, 2), ("AREA_M2", "N", 12, 1),
-                                     ("VOL_M3", "N", 12, 2), ("REF_Z", "N", 10, 3)):
-                w.field(nm, typ, sz, dec)
+            feats = []
             for s in res["structures"]:
                 e = s["epochs"][-1]["row"]
-                w.point(s["x"], s["y"])
-
-                def f(v):
-                    return float(v) if v is not None and np.isfinite(v) else None
-                w.record(s["name"], e["epoch"][:40], e["date"], s["diameter"], f(e["max_depth"]), f(e["r_at_max"]),
-                         f(e["bearing_at_max"]), f(e["extent"]), f(e["scour_area"]), f(e["scour_volume"]),
-                         f(e["reference"]))
-            w.close()
-            written.append(base + ".shp")
+                feats.append({"type": "Point", "parts": [np.array([[s["x"], s["y"]]])],
+                              "attrs": {"NAME": s["name"], "EPOCH": e["epoch"], "DATE": e["date"], "DIAM_M": s["diameter"],
+                                        "MAXDEP_M": f(e["max_depth"]), "R_MAX_M": f(e["r_at_max"]),
+                                        "BRG_MAX": f(e["bearing_at_max"]), "EXTENT_M": f(e["extent"]),
+                                        "AREA_M2": f(e["scour_area"]), "VOL_M3": f(e["scour_volume"]),
+                                        "REF_Z": f(e["reference"])}})
+            jobs.append((path, feats, "scour"))
         else:
-            ne = len(res["epoch_names"])
-            w = shapefile.Writer(base + "_vectors", shapeType=shapefile.POLYLINE)
-            for nm, typ, sz, dec in (("KP", "N", 12, 4), ("SHIFT_M", "N", 10, 2), ("RATE_MYR", "N", 10, 3),
-                                     ("AZIMUTH", "N", 6, 1), ("ALONG_M", "N", 10, 2), ("CORR", "N", 6, 3),
-                                     ("RELIABLE", "C", 3, 0), ("PAIR", "C", 60, 0)):
-                w.field(nm, typ, sz, dec)
-            for r in res["windows"]:
-                if not np.isfinite(r.get("dx", np.nan)):
-                    continue
-                w.line([[(r["x"], r["y"]), (r["x"] + r["dx"], r["y"] + r["dy"])]])
-
-                def f(v):
-                    return float(v) if v is not None and np.isfinite(v) else None
-                w.record(r["kp"], f(r["shift"]), f(r["rate"]), f(r["azimuth"]), f(r["along"]), f(r["corr"]),
-                         "yes" if r.get("reliable") else "no", r["pair"][:60])
-            w.close()
-            written.append(base + "_vectors.shp")
+            vec = [{"type": "LineString", "parts": [np.array([[r["x"], r["y"]], [r["x"] + r["dx"], r["y"] + r["dy"]]])],
+                    "attrs": {"KP": r["kp"], "SHIFT_M": f(r["shift"]), "RATE_MYR": f(r["rate"]),
+                              "AZIMUTH": f(r["azimuth"]), "ALONG_M": f(r["along"]), "CORR": f(r["corr"]),
+                              "RELIABLE": "yes" if r.get("reliable") else "no", "PAIR": r["pair"]}}
+                   for r in res["windows"] if np.isfinite(r.get("dx", np.nan))]
+            jobs.append((f"{base}_vectors{ext}", vec, "migration_vectors"))
             if res.get("segments"):
                 st = res["st"]
                 xy = np.column_stack([st["x"], st["y"]])
-                w = shapefile.Writer(base + "_exposure", shapeType=shapefile.POLYLINE)
-                for nm, typ, sz, dec in (("KP_FROM", "N", 12, 4), ("KP_TO", "N", 12, 4), ("LENGTH_M", "N", 10, 1),
-                                         ("YEARS_MIN", "N", 6, 1)):
-                    w.field(nm, typ, sz, dec)
+                exp = []
                 for g in res["segments"]:
                     i0, i1 = g["i0"], max(min(g["i1"] + 1, len(xy) - 1), g["i0"] + 1)
-                    w.line([[tuple(p) for p in xy[i0:i1 + 1]]])
-                    w.record(g["kp_from"], g["kp_to"], g["length"], g.get("years_min"))
-                w.close()
-                written.append(base + "_exposure.shp")
-            del ne
-        if self.project.crs is not None:
-            for f_ in written:
-                with open(os.path.splitext(f_)[0] + ".prj", "w", encoding="ascii", errors="ignore") as fh:
-                    fh.write(self.project.crs.to_wkt("WKT1_ESRI"))
-        self.statusBar().showMessage("Saved " + ", ".join(os.path.basename(f) for f in written), 8000)
+                    exp.append({"type": "LineString", "parts": [xy[i0:i1 + 1]],
+                                "attrs": {"KP_FROM": g["kp_from"], "KP_TO": g["kp_to"], "LENGTH_M": g["length"],
+                                          "YEARS_MIN": f(g.get("years_min"))}})
+                jobs.append((f"{base}_exposure{ext}", exp, "exposure_risk"))
+        written = []
+        for p, feats, layer in jobs:
+            if feats:
+                vector_io.write(p, feats, self.project.crs, layer=layer)
+                written.append(p)
+        self.statusBar().showMessage("Saved " + ", ".join(os.path.basename(x) for x in written), 8000)
 
     def seabed_save_chart(self):
         if self.seabed_dialog is None or self._seabed_result is None:

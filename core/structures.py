@@ -115,36 +115,35 @@ def read_table(path, skip_rows, delim_key, roles, encoding=None, default_diamete
     return Structures(list(names[ok]), np.column_stack([x[ok], y[ok]]), d[ok]), geo
 
 
-def read_shp(path, default_diameter=8.0):
-    """Shapefile points → (Structures, crs or None, info)."""
-    import shapefile
-
-    from core import crs as crsmod
-    r = shapefile.Reader(path)
-    fields = [f[0] for f in r.fields[1:]]
-    low = {f.lower(): f for f in fields}
-    nf = next((low[k] for k in ("name", "id", "wtg", "label", "turbine", "structure", "location") if k in low), None)
-    df_ = next((low[k] for k in low if any(k.startswith(p) for p in ("diam", "dia", "od"))), None)
+def read_shp(path, default_diameter=8.0, layer=None):
+    """Any vector file (Shapefile, GeoPackage, GeoJSON, KML/KMZ, GPX, DXF) → (Structures, crs or None, info).
+    Points are used as they are; lines / polygons by their centre (e.g. a foundation outline)."""
+    from fileio import vector_io
+    feats, crs, vinfo = vector_io.read(path, layer)
+    if not feats:
+        raise ValueError("The file has no features")
+    low_keys = lambda a: {str(k).lower(): k for k in a}   # noqa: E731
     names, xy, dia = [], [], []
-    for k, sr in enumerate(r.iterShapeRecords()):
-        sh = sr.shape
-        if not sh.points:
-            continue
-        rec = sr.record.as_dict() if hasattr(sr.record, "as_dict") else {}
-        p = np.asarray(sh.points, float)[:, :2].mean(axis=0)       # point, or centroid of other shapes
-        names.append(str(rec.get(nf)) if nf and rec.get(nf) not in (None, "") else f"S{k + 1:02d}")
-        xy.append(p)
+    nf = df_ = None
+    for k, f in enumerate(feats):
+        a = f["attrs"]
+        low = low_keys(a)
+        if nf is None:
+            nf = next((low[x] for x in ("name", "id", "wtg", "label", "turbine", "structure", "location") if x in low),
+                      None)
+        if df_ is None:
+            df_ = next((low[x] for x in low if any(x.startswith(p) for p in ("diam", "dia", "od"))), None)
+        pts = np.vstack([p[:, :2] for p in f["parts"]])
+        names.append(str(a.get(nf)) if nf and a.get(nf) not in (None, "") else f"S{k + 1:02d}")
+        xy.append(pts.mean(axis=0) if f["type"] != "Point" else pts[0])
         try:
-            dv = float(rec.get(df_)) if df_ else np.nan
+            dv = float(a.get(df_)) if df_ else np.nan
         except (TypeError, ValueError):
             dv = np.nan
         dia.append(dv if np.isfinite(dv) and dv > 0 else default_diameter)
-    if not names:
-        raise ValueError("The shapefile has no features")
-    prj = os.path.splitext(path)[0] + ".prj"
-    crs = crsmod.guess_from_prj(prj) if os.path.isfile(prj) else None
-    info = (f"{len(names)} structure(s)" + (f", names from '{nf}'" if nf else "")
-            + (f", diameter from '{df_}'" if df_ else ", no diameter field") + (", .prj found" if crs else ", no .prj"))
+    info = (f"{vinfo} → {len(names)} structure(s)" + (f", names from '{nf}'" if nf else "")
+            + (f", diameter from '{df_}'" if df_ else ", no diameter field")
+            + ("" if crs is not None else ", coordinate system not in the file"))
     return Structures(names, np.asarray(xy), np.asarray(dia)), crs, info
 
 

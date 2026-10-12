@@ -13,7 +13,7 @@ from ui.theme import C
 from ui.widgets import Card, muted
 
 KIND_COLOR = {"points": "#4c8dff", "grid": "#3ecf8e", "tin": "#ffd166", "route": "#4cc9f0", "contour": "#c9ced6",
-              "structure": "#ff9f43"}
+              "structure": "#ff9f43", "vector": "#c77dff"}
 
 
 class DataCard(Card):
@@ -170,6 +170,12 @@ class DataCard(Card):
             m.addAction(icon("subset"), "Subset editor along route", lambda i=ds.id: cb.route_subset(i))
         elif ds.kind == "structure":
             m.addAction("Scour monitoring…", lambda: cb.open_seabed_dialog(0))
+        elif ds.kind == "vector":
+            if ds.obj.polygons():
+                m.addAction("Use a polygon as analysis area…", lambda i=ds.id: cb.vector_use_polygon(i))
+            if ds.obj.lines():
+                m.addAction("Make routes from lines…", lambda i=ds.id: cb.vector_to_routes(i))
+            m.addAction(icon("export"), "Export as…", lambda i=ds.id: cb.vector_export(i))
         else:
             m.addAction(icon("export"), "Export…", lambda i=ds.id: cb.ds_export(i))
         if ds.kind in ("points", "grid"):

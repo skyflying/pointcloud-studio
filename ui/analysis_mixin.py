@@ -61,6 +61,8 @@ class AnalysisMixin:
             self._cable_context()
         if hasattr(self, "_seabed_context"):
             self._seabed_context()
+        if hasattr(self, "_land_context"):
+            self._land_context()
         if self.volume_dialog is None and getattr(self, "design_dialog", None) is None:
             return
         surfs = [(d.id, d.name, d.obj.cell if isinstance(d.obj, Dem) else None)
@@ -102,28 +104,32 @@ class AnalysisMixin:
             self.design_dialog.raise_()
 
     def volume_load_polygon(self):
-        import shapefile
-
         from core import crs as crsmod
+        from fileio import vector_io
         from ui.crs_dialog import CrsDialog
-        path, _ = QFileDialog.getOpenFileName(self, "Polygon shapefile", "", "Shapefile (*.shp)")
+        from ui.vector_pick import pick_vector
+        path, layer = pick_vector(self, "Polygon file")
         if not path:
             return
         try:
-            r = shapefile.Reader(path)
-            shp = next(s for s in r.shapes() if s.shapeType in (shapefile.POLYGON, shapefile.POLYGONZ,
-                                                                 shapefile.POLYGONM))
-        except StopIteration:
-            QMessageBox.warning(self, "No polygon", "The shapefile contains no polygon.")
-            return
+            feats, src, _info = vector_io.read(path, layer)
         except Exception as e:  # noqa: BLE001
-            QMessageBox.critical(self, "Cannot read shapefile", str(e))
+            QMessageBox.critical(self, "Cannot read file", f"{type(e).__name__}: {e}")
             return
-        end = shp.parts[1] if len(shp.parts) > 1 else len(shp.points)
-        xy = np.asarray(shp.points[:end], float)[:, :2]
-        prj = os.path.splitext(path)[0] + ".prj"
-        src = crsmod.guess_from_prj(prj) if os.path.isfile(prj) else None
-        ok, src = CrsDialog.ask(self, "Coordinate system of the polygon", "Confirm the EPSG of the shapefile.",
+        polys = vector_io.polygons(feats)
+        if not polys:
+            QMessageBox.warning(self, "No polygon", "The file contains no polygon.")
+            return
+        k = 0
+        if len(polys) > 1:
+            from PySide6.QtWidgets import QInputDialog
+            item, ok = QInputDialog.getItem(self, "Choose a polygon", f"{len(polys)} polygons:",
+                                            [f"{i + 1}: {n}" for i, (n, _p) in enumerate(polys)], 0, False)
+            if not ok:
+                return
+            k = int(item.split(":")[0]) - 1
+        xy = polys[k][1]
+        ok, src = CrsDialog.ask(self, "Coordinate system of the polygon", "Confirm the EPSG of the file.",
                                 initial=src or self.project.crs, allow_unknown=self.project.crs is None)
         if not ok:
             return
@@ -501,11 +507,12 @@ class ContourMixin:
         from fileio.contour_io import export_contours
         stem = os.path.splitext(self._project_path_stem("contours"))[0] + "_contours"
         path, flt = QFileDialog.getSaveFileName(self, "Export contours", stem + ".shp",
-                                                "Shapefile 3D (*.shp);;DXF 3D polylines (*.dxf)")
+                                                "Shapefile 3D (*.shp);;DXF 3D polylines with labels (*.dxf);;"
+                                                "GeoPackage (*.gpkg);;GeoJSON (*.geojson);;KML — Google Earth (*.kml)")
         if not path:
             return
-        if not path.lower().endswith((".shp", ".dxf")):
-            path += ".dxf" if "DXF" in flt else ".shp"
+        from fileio.vector_io import ext_from_filter
+        path = ext_from_filter(path, flt)
         labels = None
         if path.lower().endswith(".dxf"):
             from PySide6.QtWidgets import QDialog

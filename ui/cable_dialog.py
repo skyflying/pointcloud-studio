@@ -178,11 +178,11 @@ class CableDialog(QDialog):
         t = QLabel("Cable analysis")
         t.setObjectName("title")
         v.addWidget(t)
-        v.addWidget(_muted("Along a cable route, every <i>step</i> metres. A <b>cable profile</b> is a route imported "
-                           "with a cable-top column (File → Import Route). Elevations are positive up; "
-                           "DoB = seabed − cable top."))
+        v.addWidget(_muted("Along a cable or pipeline route — subsea or on land — every <i>step</i> metres. A "
+                           "<b>cable profile</b> is a route imported with a cable / pipe top column (File → Import Route). "
+                           "Elevations are positive up; depth of burial (cover) = ground / seabed − cable top."))
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._tab_dob(), "Depth of burial")
+        self.tabs.addTab(self._tab_dob(), "Depth of burial / cover")
         self.tabs.addTab(self._tab_span(), "Free span")
         self.tabs.addTab(self._tab_berm(), "Rock berm as-built")
         v.addWidget(self.tabs)
@@ -220,7 +220,7 @@ class CableDialog(QDialog):
         v.addWidget(self.table)
         brow = QHBoxLayout()
         self.btn_csv = QPushButton("Export CSV…")
-        self.btn_shp = QPushButton("Export SHP…")
+        self.btn_shp = QPushButton("Export GIS…")
         self.btn_png = QPushButton("Save chart…")
         self.btn_layers = QPushButton("Add layers")
         self.btn_layers.setToolTip("Rock berm: add the design surface (template) and the as-built − design layer")
@@ -272,7 +272,7 @@ class CableDialog(QDialog):
         self.d_width = _dsp(0.5, 0.05, 50.0, 0.1, 2)
         self.d_width.setToolTip("Point cloud as seabed: median of the points within ± this distance of the route")
         f.addRow("Cable profile", self.d_cable)
-        f.addRow("Seabed (surface or points)", self.d_seabed)
+        f.addRow("Ground / seabed (surface or points)", self.d_seabed)
         f.addRow("Target DoB", self.d_target)
         f.addRow("Corridor ± (points)", self.d_width)
         self.d_c = self._common(f)
@@ -293,7 +293,7 @@ class CableDialog(QDialog):
         self.s_route = QComboBox()
         self.s_pc = QComboBox()
         f.addRow("A: cable profile", self.s_cable)
-        f.addRow("A: seabed", self.s_seabed)
+        f.addRow("A: ground / seabed", self.s_seabed)
         f.addRow("B: route", self.s_route)
         f.addRow("B: point cloud", self.s_pc)
         self.s_diam = _dsp(0.2, 0.01, 5.0, 0.01, 3)

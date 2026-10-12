@@ -32,10 +32,12 @@ def _muted(t):
 
 
 class StructureImportDialog(QDialog):
-    def __init__(self, path, project_crs, parent=None):
+    def __init__(self, path, project_crs, parent=None, layer=None):
         super().__init__(parent)
+        from fileio.vector_io import is_vector
         self.path = path
-        self.is_shp = path.lower().endswith(".shp")
+        self.layer = layer
+        self.is_shp = is_vector(path)
         self.project_crs = project_crs
         self.crs, self.crs_note = None, ""
         self.result = None
@@ -70,9 +72,9 @@ class StructureImportDialog(QDialog):
         if self.is_shp:
             self.info = _muted("")
             v.addWidget(self.info)
-            _s, crs, _i = stmod.read_shp(path)
+            _s, crs, _i = stmod.read_shp(path, layer=layer)
             if crs is not None:
-                self.crs, self.crs_note = crs, "from the .prj file"
+                self.crs, self.crs_note = crs, "from the file"
         else:
             self.lines, self.encoding = read_preview(path)
             v.addWidget(_section("Raw preview"))
@@ -184,7 +186,7 @@ class StructureImportDialog(QDialog):
 
     def _parse(self):
         if self.is_shp:
-            st, _crs, info = stmod.read_shp(self.path, self.sp_d.value())
+            st, _crs, info = stmod.read_shp(self.path, self.sp_d.value(), self.layer)
             self.info.setText(info)
             return st
         st, _geo = stmod.read_table(self.path, self.sp_start.value() - 1, self.cmb_delim.currentData(),

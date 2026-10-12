@@ -5,7 +5,7 @@ A desktop application for viewing, cleaning, and analysing point cloud data from
 <!-- Replace with a real screenshot: save it as docs/screenshot.png -->
 ![PointCloud Studio screenshot](https://raw.githubusercontent.com/skyflying/pointcloud-studio/refs/heads/main/blob/screenshot.png)
 
-**Current version: 0.1.15** · [Releases](../../releases) · [使用說明（繁體中文）](docs/USER_GUIDE.zh-TW.md)
+**Current version: 0.1.16** · [Releases](../../releases) · [使用說明（繁體中文）](docs/USER_GUIDE.zh-TW.md)
 
 ---
 
@@ -15,7 +15,8 @@ A desktop application for viewing, cleaning, and analysing point cloud data from
 - ASCII XYZ / ASC files with a configurable start row (skip headers) and column mapping (choose which columns hold X, Y, Z and attributes); automatic encoding detection (UTF-8 / Big5)
 - LAS and LAZ files (all dimensions and VLRs preserved)
 - DEM grids: GeoTIFF, ESRI ASCII Grid, regular XYZ grids
-- Cable / pipeline routes: RPL-style CSV / TXT (Easting/Northing or Lat/Lon, KP, several cables per file) and Shapefiles
+- Cable / pipeline routes: RPL-style CSV / TXT (Easting/Northing or Lat/Lon, KP, several cables per file) and vector files
+- **Vector files** everywhere a Shapefile was accepted (routes, structures, analysis polygons) and as reference layers: **Shapefile, GeoPackage, GeoJSON, KML / KMZ, GPX, DXF** (ASCII) — read and written in pure Python (no GDAL); multi-layer files (GeoPackage tables, KML folders, DXF layers) ask for the layer; coordinate systems are read from the file (.prj, GeoPackage SRS; GeoJSON / KML / GPX = WGS 84) and reprojected to the project
 - Land and sea in one convention: Z is elevation (up +) internally; files that store depths (down +) are converted on import (or flipped later), and can be written back as depths
 
 **Projects and coordinate systems**
@@ -52,7 +53,17 @@ A desktop application for viewing, cleaning, and analysing point cloud data from
 - **Earthworks design** (marine and land): cut / fill to a design level — given as elevation or depth — with over-cut allowance and side slopes 1 : n; **trench** along a route (bottom width, depth below the surface, side slopes) with excavation volume per KP interval; bulking and shrinkage factors with cut / fill balance
 - Point cloud to surface deviation; seabed **slope map** with threshold statistics
 
-**Cable & Foundations**
+**Land**
+- **Terrain products**: slope, aspect, curvature, roughness (TRI) with area statistics; **surface models** from a classified cloud: DSM, DTM, nDSM (object heights), CHM (canopy height), canopy cover and building footprint
+- **Change detection**: DEM of difference with a level of detection (σ of both surveys, 68 / 95 / 99 %), erosion / deposition volumes overall and per polygon, rates from survey dates; **M3C2** cloud-to-cloud distances along surface normals for steep slopes and cliffs, with per-point LoD95
+- **Stockpile volumes**: base from each boundary (best-fit plane, triangulated boundary, lowest point or a level), volume, area, height, tonnage, change between surveys
+- **Road corridor**: centre line, grade from the smoothed ground or PVI points, formation width, crossfall, cut and fill slopes; design surface, cut / fill layer, volumes per interval, mass haul, longitudinal profile, cross-sections
+- **Hydrology**: depression filling, D8 flow accumulation, stream network, watershed above an outlet, inundation below a water level (optionally connected to a seed point)
+- **Clearance check**: points of chosen classes closer than a limit to a 3D line (power line, pipe bridge, conductor) or to a 2D line at a height above ground; infringement segments with horizontal / vertical components
+- Results: summary, tables, charts, layers into the project, CSV, GIS (any vector format above) and GeoTIFF export, 3D overlays
+
+**Lines & Structures** (subsea and on land)
+- Analyses below work for subsea and land cables and pipelines (depth of burial = depth of cover); exports in any vector format above
 - **Cable profiles**: routes imported with a top-of-cable column (elevation or depth, e.g. SBI / TSS / ROV data) and optionally the survey's reported DoB; Shapefile PolyLineZ values can be used as cable top. Drawn at their own level in 3D (orange) and as a cable-top line in the profile panel
 - **Depth of burial**: DoB = seabed − cable top every *step* metres against a target burial; seabed from a DEM, TIN or point-cloud corridor; non-compliant segments (KP from / to, length, minimum DoB), KP-bin statistics and compliance percentage, comparison with the reported DoB
 - **Free spans**: (A) cable profile + seabed, or (B) point cloud only — the cable crest is found in the corridor and the seabed under it interpolated from both sides; gap = cable bottom − seabed; spans listed with length and maximum gap, flagged against a reporting length
@@ -187,6 +198,13 @@ pointcloud-studio/
 ## Version history
 
 ### Releases
+
+#### 0.1.16
+- **Added** — Vector formats: GeoPackage, GeoJSON, KML / KMZ, GPX and DXF next to Shapefile, for import (routes, structures, polygons, reference layers; layer choice for multi-layer files) and export (contours, cable / scour / sand-wave / land results); open or drag a vector file to add it as a **vector reference layer** (shown in 3D; polygons usable as analysis areas, lines convertible to routes / centre lines).
+- **Added** — *Land* menu: terrain products and surface models (DSM / DTM / nDSM / CHM), change detection (DoD with level of detection, M3C2), stockpile volumes, road corridor (template, cut / fill, mass haul, sections), hydrology (sinks, flow, streams, watershed, inundation) and clearance check.
+- **Changed** — *Cable & Foundations* is now *Lines & Structures*; wording covers land cables and pipelines ("depth of burial / cover", "ground / seabed").
+- **Added** — Self-test: every vector format round-trip; land analyses against analytic answers (slope / aspect, DoD volume, cone stockpile, road fill, inundation area, clearance).
+- **Fixed** (testing of 0.1.16) — Polygon masks treated a ring as closed when its last vertex was within ~26 m of the first (a relative tolerance at TWD97 coordinates): small analysis polygons lost a vertex in volume / earthworks calculations (a 10 × 10 m test polygon gave 52.5 m² instead of 75 m²) — present since earlier versions; GeoJSON / KML polygons written by the program are now valid for QGIS / GDAL. DXF areas stored as HATCH entities (GDAL, many CAD programs) are read. Long or diagonal road corridors are computed in pieces (a 6.5 km route failed before; now 14 s). Vector layers with thousands of features drape onto the terrain in one step (20,000 parcels: 36 s → 0.2 s) and are reprojected in one transformation (GeoJSON export of 20,000 polygons: ~6 min → 2 s). Hydrology shows progress during depression filling. Warnings for stockpiles less than 95 % covered by the survey and for clearance checks on an unclassified cloud; a clear message when a dataset used by the Land dialog was removed.
 
 #### 0.1.15
 - **Added** — Structures (CSV / Shapefile import with name and diameter), survey dates on datasets, **scour monitoring** (far-field / baseline / level reference, maximum depth, extent, area, volume, rates, radial profiles, depth maps and GeoTIFFs) and **sand wave migration** (2D matching or profile, crest tracking, burial forecast with years to exposure). CSV / Shapefile / PNG export, 3D overlays.

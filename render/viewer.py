@@ -124,6 +124,11 @@ class PointCloudViewer:
         self.str_text.set_gl_state("translucent", depth_test=False)
         self.str_text.order = 6
         self.str_text.visible = False
+        # vector reference layers (GIS / CAD): violet lines, polygon outlines, point crosses
+        self.vec_lines = scene.visuals.Line(parent=self.view.scene, method="gl", width=1.6)
+        self.vec_lines.set_gl_state("translucent", depth_test=False)
+        self.vec_lines.order = 4
+        self.vec_lines.visible = False
         # analysis results along routes (DoB / free spans / berm): coloured polylines + labels
         self.ana_lines = scene.visuals.Line(parent=self.view.scene, method="gl", width=5.0)
         self.ana_lines.set_gl_state("translucent", depth_test=False)
@@ -567,7 +572,7 @@ class PointCloudViewer:
                   + [l.mesh for l in self.surfaces.values()] + [r["markers"] for r in self.refs.values()]
                   + list(self.contours.values()) + list(self.contour_labels.values())
                   + [self.route_lines, self.route_text, self.ana_lines, self.ana_text, self.str_lines,
-                     self.str_text]):
+                     self.str_text, self.vec_lines]):
             m.transform = STTransform(scale=(1.0, 1.0, self.z_scale))
         for layer in self.surfaces.values():
             layer.update_shade(self.z_scale, self._ensure_elev_scale())
@@ -852,6 +857,27 @@ class PointCloudViewer:
             loc[miss, 2] = self._drape_z(loc[miss, 0], loc[miss, 1])
         return np.repeat(loc, 2, axis=0)[1:-1]
 
+    def _z_pairs_many(self, items):
+        """[(xy (N, 2) world, z (N,) world or NaN)] → one array of local segment pairs. All vertices that
+        need draping are looked up in a single call (one call per feature is far too slow for 10⁴ features)."""
+        if not items:
+            return np.empty((0, 3))
+        o = self.origin
+        xy = np.vstack([np.asarray(a, float)[:, :2] for a, _z in items])
+        z = np.concatenate([np.asarray(zz, float) for _a, zz in items])
+        loc = np.column_stack([xy[:, 0] - o[0], xy[:, 1] - o[1], z - o[2]])
+        miss = ~np.isfinite(loc[:, 2])
+        if miss.any():
+            loc[miss, 2] = self._drape_z(loc[miss, 0], loc[miss, 1])
+        n = np.array([len(a) for a, _z in items])
+        start = np.r_[0, np.cumsum(n)[:-1]]
+        # segment pairs inside each polyline: (k, k+1) for k in [start, start + n − 2]
+        first = np.concatenate([np.arange(s0, s0 + m - 1) for s0, m in zip(start, n) if m >= 2])
+        out = np.empty((2 * len(first), 3))
+        out[0::2] = loc[first]
+        out[1::2] = loc[first + 1]
+        return out
+
     def set_routes(self, routes):
         """routes: list of Route objects (visible ones). Cyan polylines draped on the terrain + KP labels at
         round values; cable profiles (routes with cable-top Z) are drawn orange at their own level."""
@@ -931,6 +957,39 @@ class PointCloudViewer:
         self.str_text.visible = True
         self.canvas.update()
 
+    def set_vectors(self, layers, color=(0.78, 0.49, 1.0, 0.95)):
+        """layers: VectorLayer objects → lines and polygon outlines (3D lines at their Z, others draped),
+        points as small crosses."""
+        if self.origin is None or not layers or not any(len(l) for l in layers):
+            self.vec_lines.visible = False
+            self.canvas.update()
+            return
+        items = []
+        span = float(np.max(self.bbox[1][:2] - self.bbox[0][:2])) if self.bbox is not None else 100.0
+        arm = max(span / 400.0, 0.5)
+        for lay in layers:
+            for f in lay.features:
+                for p in f["parts"]:
+                    if f["type"] == "Point":
+                        x, y = p[0, 0], p[0, 1]
+                        z = p[0, 2] if p.shape[1] >= 3 and abs(p[0, 2]) > 1e-9 else np.nan
+                        items.append((np.array([(x - arm, y), (x + arm, y)]), np.full(2, z)))
+                        items.append((np.array([(x, y - arm), (x, y + arm)]), np.full(2, z)))
+                        continue
+                    q = p if f["type"] != "Polygon" or np.array_equal(p[0, :2], p[-1, :2]) else np.vstack([p, p[:1]])
+                    if len(q) < 2:
+                        continue
+                    z = q[:, 2] if q.shape[1] >= 3 and np.any(np.abs(q[:, 2]) > 1e-9) else np.full(len(q), np.nan)
+                    items.append((q[:, :2], z))
+        if not items:
+            self.vec_lines.visible = False
+            self.canvas.update()
+            return
+        self.vec_lines.set_data(pos=self._z_pairs_many(items).astype(np.float32), color=color, connect="segments")
+        self.vec_lines.transform = STTransform(scale=(1.0, 1.0, self.z_scale))
+        self.vec_lines.visible = True
+        self.canvas.update()
+
     def set_analysis_overlay(self, lines=(), labels=()):
         """lines: [{xy (N,2) world, z (N,) world or None (draped), color rgba}];
         labels: [(x, y, z or None, text)]. Empty → hidden."""
@@ -938,15 +997,16 @@ class PointCloudViewer:
             self.ana_lines.visible = self.ana_text.visible = False
             self.canvas.update()
             return
-        pos, cols = [], []
+        pos, cols, items = [], [], []
         for ln in lines:
             xy = np.asarray(ln["xy"], float)
             if len(xy) < 2:
                 continue
             z = ln.get("z")
-            q = self._z_pairs(xy, np.full(len(xy), np.nan) if z is None else z)
-            pos.append(q)
-            cols.append(np.tile(ln["color"], (len(q), 1)))
+            items.append((xy, np.full(len(xy), np.nan) if z is None else np.asarray(z, float)))
+            cols.append(np.tile(ln["color"], (2 * (len(xy) - 1), 1)))
+        if items:
+            pos.append(self._z_pairs_many(items))
         tr = STTransform(scale=(1.0, 1.0, self.z_scale))
         if pos:
             self.ana_lines.set_data(pos=np.vstack(pos).astype(np.float32), color=np.vstack(cols).astype(np.float32),

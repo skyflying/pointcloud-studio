@@ -38,6 +38,7 @@ from ui.project_mixin import ALL_FILTER, ProjectFileMixin, ProjectMixin
 from ui.analysis_mixin import AnalysisMixin, ContourMixin, DesignMixin
 from ui.cable_mixin import CableMixin
 from ui.seabed_mixin import SeabedMixin
+from ui.land_mixin import LandMixin
 from ui.subset_mixin import ClassifyMixin, FilterMixin, RouteMixin, SubsetMixin
 from ui.export_dialog import ExportDialog
 from ui.import_dialog import XyzImportDialog
@@ -114,7 +115,7 @@ class EmptyState(QWidget):
 
 
 # ---------------------------------------------------------------- main window
-class MainWindow(SeabedMixin, CableMixin, ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteMixin, FilterMixin, SubsetMixin, ProjectFileMixin, ProjectMixin, QMainWindow):
+class MainWindow(LandMixin, SeabedMixin, CableMixin, ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteMixin, FilterMixin, SubsetMixin, ProjectFileMixin, ProjectMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
@@ -135,6 +136,7 @@ class MainWindow(SeabedMixin, CableMixin, ClassifyMixin, ContourMixin, DesignMix
         self._init_analysis_state()
         self._init_cable_state()
         self._init_seabed_state()
+        self._init_land_state()
         self.region_visible = self.subset_visible = self.reviewed_visible = True
         self._filter_saved = None
         self.sections = []
@@ -245,7 +247,13 @@ class MainWindow(SeabedMixin, CableMixin, ClassifyMixin, ContourMixin, DesignMix
                                   triggered=self.open_design_dialog)
         self.act_slope = QAction("Slope Map…", self, triggered=self.open_slope_map)
         self.act_contours = QAction("Contours…", self, shortcut="Ctrl+Shift+C", triggered=self.open_contour_dialog)
-        self.act_dob = QAction("Depth of Burial…", self, shortcut="Ctrl+Shift+B",
+        self.act_vector = QAction("Import Vector Layer…", self, shortcut="Ctrl+Shift+L",
+                                  triggered=self.import_vector_layer)
+        self.act_vector.setToolTip("Shapefile, GeoPackage, GeoJSON, KML / KMZ, GPX or DXF — boundaries, roads, areas…")
+        self.land_acts = [QAction(t, self, triggered=lambda _=False, k=k: self.open_land_dialog(k)) for k, t in enumerate(
+            ("Terrain Products && Surface Models…", "Change Detection…", "Stockpile Volumes…", "Road Corridor…",
+             "Hydrology…", "Clearance Check…"))]
+        self.act_dob = QAction("Depth of Burial / Cover…", self, shortcut="Ctrl+Shift+B",
                                triggered=lambda: self.open_cable_dialog(0))
         self.act_span = QAction("Free Spans…", self, triggered=lambda: self.open_cable_dialog(1))
         self.act_berm = QAction("Rock Berm As-built…", self, triggered=lambda: self.open_cable_dialog(2))
@@ -261,6 +269,7 @@ class MainWindow(SeabedMixin, CableMixin, ClassifyMixin, ContourMixin, DesignMix
         m_file.addAction(self.act_open)
         m_file.addAction(self.act_add)
         m_file.addAction(self.act_route)
+        m_file.addAction(self.act_vector)
         m_file.addSeparator()
         m_file.addAction(self.act_save)
         m_file.addAction(self.act_save_as)
@@ -301,7 +310,10 @@ class MainWindow(SeabedMixin, CableMixin, ClassifyMixin, ContourMixin, DesignMix
         m_an.addAction(self.act_design)
         m_an.addAction(self.act_slope)
         m_an.addAction(self.act_contours)
-        m_cab = self.menuBar().addMenu("&Cable && Foundations")
+        m_land = self.menuBar().addMenu("&Land")
+        for a in self.land_acts:
+            m_land.addAction(a)
+        m_cab = self.menuBar().addMenu("Lines && &Structures")
         m_cab.addAction(self.act_route)
         m_cab.addAction(self.act_structs)
         m_cab.addSeparator()

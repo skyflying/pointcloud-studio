@@ -205,7 +205,7 @@ class SeabedDialog(QDialog):
         v.addWidget(self.table)
         brow = QHBoxLayout()
         self.btn_csv = QPushButton("Export CSV…")
-        self.btn_shp = QPushButton("Export SHP…")
+        self.btn_shp = QPushButton("Export GIS…")
         self.btn_png = QPushButton("Save chart…")
         self.btn_layer = QPushButton("Add depth layer")
         self.btn_layer.setToolTip("Scour depth grid of the chosen structure and epoch as a project layer")

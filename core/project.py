@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import warnings
+
 import numpy as np
 
 from core.history import History
@@ -18,7 +20,8 @@ from core.selection import Selection
 from core.surface import Dem, Tin
 from core.trash import Trash
 
-KIND_LABEL = {"points": "PTS", "grid": "DEM", "tin": "TIN", "route": "RTE", "contour": "CNT", "structure": "STR"}
+KIND_LABEL = {"points": "PTS", "grid": "DEM", "tin": "TIN", "route": "RTE", "contour": "CNT", "structure": "STR",
+              "vector": "VEC"}
 
 
 @dataclass
@@ -66,6 +69,10 @@ class Dataset:
             return o.vertices.min(axis=0), o.vertices.max(axis=0)
         if o.__class__.__name__ == "ContourSet":
             return o.bbox()
+        if o.__class__.__name__ == "VectorLayer":
+            lo, hi = o.bounds()
+            z0, z1 = o.z_range()
+            return np.array([lo[0], lo[1], z0]), np.array([hi[0], hi[1], z1])
         if o.__class__.__name__ == "Structures":
             lo, hi = o.xy.min(axis=0) - o.diameter.max(), o.xy.max(axis=0) + o.diameter.max()
             return np.array([lo[0], lo[1], np.nan]), np.array([hi[0], hi[1], np.nan])
@@ -88,6 +95,8 @@ class Dataset:
             return f"{len(o.triangles):,} tri"
         if o.__class__.__name__ == "ContourSet":
             return f"{len(o.lines):,} lines · {o.n_levels} levels · {o.interval:g} m"
+        if o.__class__.__name__ == "VectorLayer":
+            return o.size_text()
         if o.__class__.__name__ == "Structures":
             d = np.unique(np.round(o.diameter, 2))
             return f"{len(o)} structure(s) · Ø " + (f"{d[0]:g} m" if len(d) == 1 else f"{d.min():g}–{d.max():g} m")
@@ -150,8 +159,10 @@ class Project:
         boxes = [d.bbox() for d in self.datasets if d.visible or not visible_only]
         if not boxes:
             return None
-        lo = np.nanmin([b[0] for b in boxes], axis=0)
-        hi = np.nanmax([b[1] for b in boxes], axis=0)
+        with np.errstate(all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)     # Z of routes / vector layers only: NaN
+            lo = np.nanmin([b[0] for b in boxes], axis=0)
+            hi = np.nanmax([b[1] for b in boxes], axis=0)
         return np.nan_to_num(lo), np.nan_to_num(hi)
 
     def unique_name(self, name):
