@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.cable_dialog import KPChart, _dsp, _fmt, _muted, _section
+from ui.check_helpers import check_bar
 from ui.seabed_dialog import EpochTable
 from ui.theme import C, dark_titlebar
 
@@ -186,6 +187,7 @@ class LandDialog(QDialog):
         f = QFormLayout(w)
         self.s_epochs = EpochTable(self.cb.seabed_set_date)
         f.addRow(_section("Surveys (one or more)"))
+        f.addRow(check_bar(self.s_epochs, "Use:"))
         f.addRow(self.s_epochs)
         self.s_poly = _cmb()
         f.addRow("Stockpile boundaries", self.s_poly)

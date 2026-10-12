@@ -26,7 +26,7 @@ def _have(pkg):
         return False
 
 
-_missing_optional = [p for p in ("lazrs", "pyproj", "rasterio", "shapefile", "contourpy") if not _have(p)]
+_missing_optional = [p for p in ("lazrs", "pyproj", "rasterio", "shapefile", "contourpy", "openpyxl") if not _have(p)]
 if _missing_optional:
     print("*** NOTE: optional packages not installed, related features will be unavailable:",
           ", ".join(_missing_optional))
@@ -62,7 +62,8 @@ if sys.platform == "win32":
         binaries.append((_f, "PySide6"))
 
 hiddenimports = (
-    _safe(collect_submodules, "rasterio")
+    _safe(collect_submodules, "openpyxl")                 # Excel export (pandas loads it on demand)
+    + _safe(collect_submodules, "rasterio")
     + collect_submodules("vispy.app.backends")
     + collect_submodules("vispy.visuals")
     + ["shapefile",                 # pyshp (route import / contour export)
@@ -75,7 +76,7 @@ hiddenimports = (
 # Optional packages VisPy / pandas may pick up if they are installed — not used by the app.
 excludes = ["tkinter", "matplotlib", "PyQt5", "PyQt6", "PySide2", "IPython", "jupyter", "notebook", "pytest",
             "cv2", "imageio", "imageio_ffmpeg", "skimage", "PIL", "sklearn", "numba", "llvmlite",
-            "sympy", "networkx", "dask", "pyarrow", "tables", "h5py", "openpyxl", "sqlalchemy",
+            "sympy", "networkx", "dask", "pyarrow", "tables", "h5py", "sqlalchemy",
             "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebChannel",
             "PySide6.Qt3DCore", "PySide6.QtMultimedia", "PySide6.QtQuick", "PySide6.QtQuickWidgets",
             "PySide6.QtQml", "PySide6.QtCharts", "PySide6.QtPdf", "PySide6.QtNetwork",

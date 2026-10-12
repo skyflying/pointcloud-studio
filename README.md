@@ -5,7 +5,7 @@ A desktop application for viewing, cleaning, and analysing point cloud data from
 <!-- Replace with a real screenshot: save it as docs/screenshot.png -->
 ![PointCloud Studio screenshot](https://raw.githubusercontent.com/skyflying/pointcloud-studio/refs/heads/main/blob/screenshot.png)
 
-**Current version: 0.1.16** · [Releases](../../releases) · [使用說明（繁體中文）](docs/USER_GUIDE.zh-TW.md)
+**Current version: 0.1.22** · [Releases](../../releases) · [使用說明（繁體中文）](docs/USER_GUIDE.zh-TW.md)
 
 ---
 
@@ -15,7 +15,7 @@ A desktop application for viewing, cleaning, and analysing point cloud data from
 - ASCII XYZ / ASC files with a configurable start row (skip headers) and column mapping (choose which columns hold X, Y, Z and attributes); automatic encoding detection (UTF-8 / Big5)
 - LAS and LAZ files (all dimensions and VLRs preserved)
 - DEM grids: GeoTIFF, ESRI ASCII Grid, regular XYZ grids
-- Cable / pipeline routes: RPL-style CSV / TXT (Easting/Northing or Lat/Lon, KP, several cables per file) and vector files
+- Cable / pipeline routes: RPL-style CSV / TXT (Easting/Northing or Lat/Lon, KP, several cables per file) and vector files. Cable profiles: level from a cable-top column (elevation or depth), or seabed − reported DoB; level unit (m / cm / mm / ft), datum shift, level referring to the top / centre / bottom of the cable; decimal comma, comment lines, header line, pipe delimiter, degrees-minutes-seconds coordinates, sort by KP — every column role can be set by hand when the format is not recognised. GIS files: cable level from the geometry Z or an attribute field (also for point layers such as top-of-cable survey points, grouped by cable and ordered by KP), with the fields detected automatically and adjustable
 - **Vector files** everywhere a Shapefile was accepted (routes, structures, analysis polygons) and as reference layers: **Shapefile, GeoPackage, GeoJSON, KML / KMZ, GPX, DXF** (ASCII) — read and written in pure Python (no GDAL); multi-layer files (GeoPackage tables, KML folders, DXF layers) ask for the layer; coordinate systems are read from the file (.prj, GeoPackage SRS; GeoJSON / KML / GPX = WGS 84) and reprojected to the project
 - Land and sea in one convention: Z is elevation (up +) internally; files that store depths (down +) are converted on import (or flipped later), and can be written back as depths
 
@@ -67,6 +67,7 @@ A desktop application for viewing, cleaning, and analysing point cloud data from
 - **Cable profiles**: routes imported with a top-of-cable column (elevation or depth, e.g. SBI / TSS / ROV data) and optionally the survey's reported DoB; Shapefile PolyLineZ values can be used as cable top. Drawn at their own level in 3D (orange) and as a cable-top line in the profile panel
 - **Depth of burial**: DoB = seabed − cable top every *step* metres against a target burial; seabed from a DEM, TIN or point-cloud corridor; non-compliant segments (KP from / to, length, minimum DoB), KP-bin statistics and compliance percentage, comparison with the reported DoB
 - **Free spans**: (A) cable profile + seabed, or (B) point cloud only — the cable crest is found in the corridor and the seabed under it interpolated from both sides; gap = cable bottom − seabed; spans listed with length and maximum gap, flagged against a reporting length
+- **Multi-year cable assessment** (Ctrl+Shift+Y): one cable profile against the seabed of many years — surveys and modelled predictions, imported in one go (year read from each file name, one coordinate system and one XYZ column mapping for all). Per year: minimum cover, exposed length, free spans, and the **re-burial with a jetting trencher** needed to restore a required cover (stretches joined like a trencher run, lowering depth, trenching hours from the progress rate); the first year each stretch needs re-burial, first exposure and first span; trend charts (simulated years dashed), profile per year, 3D per year, CSV / GIS export. **Cumulative** mode (default): re-burial is carried out in the year it is needed — the cable is lowered to the re-burial cover, limited by the trencher's maximum burial depth — and later years start from the lowered cable (campaign years, repeat interventions, totals, stretches beyond the trencher); **independent** mode: every year against the original cable level. Short stretches can be ignored. **Batch**: tick several cable profiles; cables sharing a string attribute (from a GIS import, e.g. `cable_string`) are joined end to end into continuous strings (nearest-endpoint stitching from the outer end) — assess the cables, the strings or both; a batch summary lists every item, double-click opens its full detail. A year range limits the assessment. **Export**: one Excel workbook (Summary, PerYear, Interventions, ReburialStretches, Segments, Points, Settings; openpyxl — CSV per sheet without it) and five PNG figures per cable / string (trends; seabed of every year with the lowest envelope; seabed lowering and minimum cover; cable level after re-burial each year; re-burial count and first year). The cable is assumed not to sag
 - **Rock berm as-built**: design from a template (crest width, height, side and end slopes on the pre-lay seabed) or an imported design surface; as-built − design thickness, under- / over-filled area and volume, coverage, design / placed volume per KP bin, crest error along the centre line, rock cover over the cable against a minimum; design and Δ layers; check cross-sections at a fixed interval
 - **Structures** (wind turbines, substations, piles): name, position and foundation diameter from CSV / TXT (column mapping) or Shapefile points; drawn as circles with names
 - **Survey dates** on point clouds and surfaces (Data panel → ⋯ → Survey date, or in the analysis tables): epochs are ordered by date and rates are given per year
@@ -198,6 +199,33 @@ pointcloud-studio/
 ## Version history
 
 ### Releases
+
+#### 0.1.22
+- **Added** — Multi-year assessment, batch: several cables at once, cable strings joined from a string attribute (nearest-endpoint stitching), batch summary with per-item detail on double-click, year range.
+- **Added** — Exports: Excel workbook of all items (summary, per year, interventions, re-burial stretches, segments, per-station points, settings) and five figures per cable / string, after the earlier burial-check script. openpyxl added as an optional module (included in the built app; CSV per sheet when missing).
+- **Changed** — Route attributes from GIS imports (e.g. cable name, string) are saved in the project.
+
+#### 0.1.21
+- **Fixed** — Cable charts in depth mode drew the seabed *below* the cable (depths plotted increasing upwards). Depth panels now use a downward axis, so the seabed / ground is always above the cable or pipe in both depth and elevation display (depth of burial, free spans, rock berm, multi-year, sand-wave profiles).
+- **Changed** — Charts: 10 % headroom above and below the data; legend in its own band above each panel (wrapping, one entry per quantity; "solid = survey, dashed = simulated" in the title); reference-line labels at the right end on a background, kept apart when close; round tick values with light grid lines; axis title clear of the first tick.
+
+#### 0.1.20
+- **Fixed** — Ticks in tables were not drawn: the dark theme defined the ticked look for lists only, so a ticked row in the survey / year tables looked exactly like an unticked one (since 0.1.15). Ticked boxes are now filled with the accent colour and a check mark.
+- **Added** — "n of m selected" next to All · None · Invert.
+
+#### 0.1.19
+- **Fixed** — The "Use" ticks in the multi-year, scour, sand-wave and stockpile survey tables (and the route-import and export-column lists) could be hard or impossible to toggle: only a click exactly on the small indicator counted. A click anywhere in the tick cell or on the name now toggles it.
+- **Added** — *All · None · Invert* buttons for every multi-select list or table; Space toggles the selected rows; giving a dataset a year in the multi-year table ticks it.
+
+#### 0.1.18
+- **Added** — Multi-year assessment, cumulative mode: re-burial carried out in the year it is needed (to a chosen cover, limited by the trencher's maximum burial depth) with later years starting from the lowered cable; campaign years, interventions table, totals, stretches beyond the trencher, minimum stretch length. Independent mode kept.
+- **Added** — Cable import: seabed + DoB columns, level unit / datum shift / top–centre–bottom reference, decimal comma, comment lines, header line, pipe delimiter, DMS coordinates, sort by KP, "guess columns again", hints from column names; GIS imports map name / KP / level (geometry Z or a field) / DoB / seabed fields, and build cable profiles from point layers.
+- **Fixed** — GeoPackages in folders whose names contain `#` or `%` could not be read (the read-only database address was not encoded).
+
+#### 0.1.17
+- **Added** — Multi-year cable assessment: exposure, free spans and jetting-trencher re-burial need (required cover, lowering, trenching time) for many years of surveyed and simulated seabeds; batch import of yearly files; datasets carry a year and a survey / simulated flag (saved in the project).
+- **Fixed** — *Add Data* (and any multi-file load) with several files loaded only the first one or two: the next file was requested while the previous loading thread was still finishing and was silently dropped.
+- **Added** — Self-test: seabed lowering 0.3 m/yr — re-burial 2027, exposure 2031, span 2032, 3.0 h trenching.
 
 #### 0.1.16
 - **Added** — Vector formats: GeoPackage, GeoJSON, KML / KMZ, GPX and DXF next to Shapefile, for import (routes, structures, polygons, reference layers; layer choice for multi-layer files) and export (contours, cable / scour / sand-wave / land results); open or drag a vector file to add it as a **vector reference layer** (shown in 3D; polygons usable as analysis areas, lines convertible to routes / centre lines).

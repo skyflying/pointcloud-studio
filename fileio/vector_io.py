@@ -248,8 +248,15 @@ def _wkb(gtype, parts):
     return b"".join(out)
 
 
+def _ro_uri(path):
+    """Read-only SQLite URI with the path properly percent-encoded (spaces, #, %, ?, non-ASCII names and
+    Windows drive letters would otherwise break or redirect the URI)."""
+    from pathlib import Path
+    return Path(os.path.abspath(path)).as_uri() + "?mode=ro"
+
+
 def _gpkg_layers(path):
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    con = sqlite3.connect(_ro_uri(path), uri=True)
     try:
         return [r[0] for r in con.execute("SELECT table_name FROM gpkg_contents WHERE data_type='features' "
                                           "ORDER BY table_name")]
@@ -258,7 +265,7 @@ def _gpkg_layers(path):
 
 
 def _read_gpkg(path, layer=None):
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    con = sqlite3.connect(_ro_uri(path), uri=True)
     try:
         layers = [r[0] for r in con.execute("SELECT table_name FROM gpkg_contents WHERE data_type='features'")]
         if not layers:

@@ -177,7 +177,8 @@ class ExportDialog(QDialog):
         v = QVBoxLayout(w)
         v.setContentsMargins(0, 6, 0, 0)
         v.addWidget(_muted("Columns — tick to include, drag to reorder"))
-        self.lst_cols = QListWidget()
+        from ui.check_helpers import CheckList, check_bar
+        self.lst_cols = CheckList()
         self.lst_cols.setDragDropMode(QAbstractItemView.InternalMove)
         self.lst_cols.setStyleSheet(f"QListWidget {{ background: {C['surface']}; border: 1px solid {C['border']}; "
                                     f"border-radius: 8px; padding: 4px; }}")
@@ -189,6 +190,7 @@ class ExportDialog(QDialog):
             it.setCheckState(Qt.Checked if name in defaults else Qt.Unchecked)
             self.lst_cols.addItem(it)
         self.lst_cols.itemChanged.connect(self._update)
+        v.addWidget(check_bar(self.lst_cols))
         v.addWidget(self.lst_cols, 1)
 
         form = QFormLayout()

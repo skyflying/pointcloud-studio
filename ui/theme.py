@@ -111,7 +111,9 @@ QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 4px; border: 1
 QCheckBox::indicator:hover {{ border-color: {accent}; }}
 QCheckBox::indicator:checked {{ background: {accent}; border-color: {accent}; image: url({assets}/check.svg); }}
 QListWidget::indicator, QTableWidget::indicator {{ width: 14px; height: 14px; border-radius: 4px; border: 1px solid {muted_dim}; background: {surface2}; margin-right: 6px; }}
-QListWidget::indicator:checked {{ background: {accent}; border-color: {accent}; image: url({assets}/check.svg); }}
+QListWidget::indicator:checked, QTableWidget::indicator:checked {{ background: {accent}; border-color: {accent}; image: url({assets}/check.svg); }}
+QListWidget::indicator:hover, QTableWidget::indicator:hover {{ border-color: {accent}; }}
+QListWidget::indicator:indeterminate, QTableWidget::indicator:indeterminate {{ background: {accent_dim}; border-color: {accent}; }}
 QRadioButton {{ spacing: 8px; color: {text}; background: transparent; padding: 2px 0; }}
 QRadioButton:disabled {{ color: {muted_dim}; }}
 QRadioButton::indicator {{ width: 14px; height: 14px; border-radius: 8px; border: 1px solid {muted_dim}; background: {surface2}; }}

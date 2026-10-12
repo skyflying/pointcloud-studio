@@ -38,7 +38,8 @@ class Dataset:
     derived_from: int | None = None
     edit_version: int = 0           # points: bumped on every edit; tin/grid: version of the source when built
     z_flipped: bool = False         # Z sign flipped after loading (file stored depths, positive down)
-    survey_date: str | None = None  # 'YYYY-MM-DD' — epochs for scour / sand-wave analyses
+    survey_date: str | None = None  # 'YYYY-MM-DD' — epochs for scour / sand-wave / multi-year analyses
+    simulated: bool = False         # a modelled (predicted) seabed rather than a survey
     id: int = 0
     # editing state (point clouds only)
     sel: Selection | None = None

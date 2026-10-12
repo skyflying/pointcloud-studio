@@ -164,8 +164,19 @@ class ProjectMixin:
         self._next_in_queue()
 
     def _next_in_queue(self):
+        t = getattr(self, "_thread", None)
+        if self._load_queue and t is not None and t.isRunning():
+            # the previous load's thread is still shutting down (its result arrives before it has
+            # finished) — starting now would be refused and the file silently dropped: retry shortly
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(30, self._next_in_queue)
+            return
         if self._load_queue:
             self.load_path(self._load_queue.pop(0), add=True)
+        elif getattr(self, "_batch_xyz", None) is not None or getattr(self, "_batch_crs", None) is not None:
+            self._batch_xyz = self._batch_crs = None      # batch import finished
+            if hasattr(self, "_multiyear_context"):
+                self._multiyear_context()
 
     def load_path(self, path, add=False):
         from fileio.vector_io import is_vector
@@ -184,10 +195,16 @@ class ProjectMixin:
         elif ext in RASTER_EXT or (ext == ".asc" and is_esri_ascii(path)):
             fn, args, kw = read_raster, (path,), {}
         elif ext in TEXT_EXT or ext == "":
-            dlg = XyzImportDialog(path, self)
-            if dlg.exec() != QDialog.Accepted:
-                return self._next_in_queue()
-            opts = dlg.settings()
+            batch = getattr(self, "_batch_xyz", None)
+            if batch is not None and batch.get("opts") is not None:
+                opts = dict(batch["opts"])           # batch import: same column mapping as the first file
+            else:
+                dlg = XyzImportDialog(path, self)
+                if dlg.exec() != QDialog.Accepted:
+                    return self._next_in_queue()
+                opts = dlg.settings()
+                if batch is not None:
+                    batch["opts"] = dict(opts)
             as_grid = opts.pop("as_grid", False)
             fn, args, kw = (read_xyz_grid if as_grid else read_xyz), (path,), dict(opts)
             opts["as_grid"] = as_grid
@@ -219,6 +236,8 @@ class ProjectMixin:
         else:
             src = obj.meta.get("crs")
 
+        if src is None and getattr(self, "_batch_crs", None) is not None:
+            src = self._batch_crs                    # batch import: one coordinate system for all files
         if src is None:
             ok, src = CrsDialog.ask(
                 self, f"Coordinate system — {name}",
@@ -261,6 +280,9 @@ class ProjectMixin:
         ds = Dataset(name, kind, obj, p["path"], crs=target if target is not None else src, source_crs=src,
                      import_opts=p["opts"])
         first = not proj.datasets
+        tag = getattr(self, "_year_tags", {}).pop(p["path"], None)
+        if tag is not None:                          # batch import of yearly surfaces
+            ds.survey_date, ds.simulated = tag
         proj.add(ds)
         if first:
             self.depth_mode = bool(ds.bbox()[1][2] <= 0)
@@ -290,6 +312,7 @@ class ProjectMixin:
         self._cable_result = None
         self._seabed_result = None
         self._land_result = None
+        self._multiyear_result = None
         self.viewer.set_analysis_overlay()
         self.subset = None
         self.subset_route = None
@@ -729,7 +752,8 @@ def _load_project_sources(doc, project_path, sources, progress=None):
                     return None if v is None else np.array([np.nan if a is None else a for a in v], float)
                 obj = Route(rd.get("name", e["name"]), np.asarray(rd["xy"], float),
                             None if rd.get("kp") is None else np.asarray(rd["kp"], float), rd.get("start_kp", 0.0),
-                            z=_arr(rd.get("z")), dob=_arr(rd.get("dob")))
+                            z=_arr(rd.get("z")), dob=_arr(rd.get("dob")),
+                            meta={"attributes": rd.get("attributes") or {}})
                 out.append((e, obj, None))
                 if progress:
                     progress((i + 1) / n)
@@ -953,7 +977,7 @@ class ProjectFileMixin:
                          source_crs=crsmod.from_text(e.get("source_crs")), visible=e.get("visible", True),
                          opacity=e.get("opacity", 1.0), import_opts=e.get("import_opts") or {},
                          edit_version=e.get("edit_version", 0), z_flipped=bool(e.get("z_flipped", False)),
-                         survey_date=e.get("survey_date"))
+                         survey_date=e.get("survey_date"), simulated=bool(e.get("simulated", False)))
             proj.add(ds)
             idmap[e["id"]] = ds.id
             if e.get("derived_from") is not None:

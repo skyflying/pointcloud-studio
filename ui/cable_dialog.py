@@ -65,6 +65,7 @@ class KPChart(QWidget):
         self.update()
 
     def paintEvent(self, _):
+        from render.colormap import nice_ticks
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.fillRect(self.rect(), QColor(C["surface"]))
@@ -74,53 +75,85 @@ class KPChart(QWidget):
         f = p.font()
         f.setPointSizeF(max(7.5, f.pointSizeF() - 1.5))
         p.setFont(f)
+        fm = p.fontMetrics()
+        lh = fm.height()
         W, H = self.width(), self.height()
-        left, right, top, bottom = 58, 10, 8, 22
+        left, right, top, bottom = 62, 12, 6, lh + 10
         n = len(self.panels)
-        gap = 10
+        gap = 12
         ph = (H - top - bottom - gap * (n - 1)) / n
         k0, k1 = float(np.nanmin(self.kp)), float(np.nanmax(self.kp))
         if k1 - k0 < 1e-9:
             k1 = k0 + 1e-3
+        pw = W - left - right
 
         def X(k):
-            return left + (k - k0) / (k1 - k0) * (W - left - right)
+            return left + (k - k0) / (k1 - k0) * pw
 
         for i, pan in enumerate(self.panels):
             y0 = top + i * (ph + gap)
-            rect = QRectF(left, y0, W - left - right, ph)
+            # ---- header band: legend (wrapping) on the left, axis title on the right
+            ylab = pan.get("ylabel", "")
+            room = pw - fm.horizontalAdvance(ylab) - 16
+            items, rows_, x_ = [], 0, 0.0
+            for ln in pan["lines"]:
+                if not ln[0]:
+                    continue                                 # no legend entry (e.g. the dashed twin of a line)
+                wtxt = fm.horizontalAdvance("■ " + ln[0]) + 14
+                if x_ > 0 and x_ + wtxt > room:
+                    rows_ += 1
+                    x_ = 0.0
+                items.append((ln, x_, rows_))
+                x_ += wtxt
+            hh = (rows_ + 1) * lh + 4
+            for ln, xo, ro in items:
+                p.setPen(QPen(QColor(ln[1]), 1))
+                p.drawText(QRectF(left + 2 + xo, y0 + ro * lh, room, lh), Qt.AlignLeft | Qt.AlignVCenter, "■ " + ln[0])
+            p.setPen(QPen(QColor(C["muted"]), 1))
+            p.drawText(QRectF(left, y0, pw, lh), Qt.AlignRight | Qt.AlignVCenter, ylab)
+            # ---- plot area
+            py0, phh = y0 + hh, max(ph - hh, 10)
+            rect = QRectF(left, py0, pw, phh)
             p.fillRect(rect, QColor(C["bg"]))
-            vals = [np.asarray(v, float) for _l, _c, v in pan["lines"]]
-            vals += [np.array([h[0]], float) for h in pan.get("hlines", [])]
-            allv = np.concatenate([v[np.isfinite(v)] for v in vals]) if vals else np.empty(0)
+            vals = [np.asarray(ln[2], float) for ln in pan["lines"]]
+            hv = [np.array([h[0]], float) for h in pan.get("hlines", [])]
+            allv = np.concatenate([v[np.isfinite(v)] for v in vals + hv]) if vals or hv else np.empty(0)
             if len(allv) == 0:
+                p.setPen(QPen(QColor(C["border"]), 1))
+                p.drawRect(rect)
                 continue
             lo, hi = float(allv.min()), float(allv.max())
-            pad = max((hi - lo) * 0.08, 0.05)
+            pad = max((hi - lo) * 0.10, 0.1)                 # headroom above and below the data
             lo, hi = lo - pad, hi + pad
-            inv = pan.get("invert", False)
+            inv = pan.get("invert", False)                  # depths: larger values lower down
 
-            def Y(v, lo=lo, hi=hi, y0=y0, inv=inv):
+            def Y(v, lo=lo, hi=hi, py0=py0, phh=phh, inv=inv):
                 t = (v - lo) / (hi - lo)
-                return y0 + (t if inv else 1 - t) * ph
+                return py0 + (t if inv else 1 - t) * phh
 
+            p.save()
+            p.setClipRect(rect)
             for a, b, col in pan.get("bands", []):
                 xa, xb = sorted((X(a), X(b)))
                 c = QColor(col)
                 c.setAlpha(55)
-                p.fillRect(QRectF(xa, y0, max(xb - xa, 1.5), ph), c)
-            p.setPen(QPen(QColor(C["border"]), 1))
-            p.drawRect(rect)
-            for t in np.linspace(lo, hi, 4):
-                yy = Y(t)
-                p.setPen(QPen(QColor(C["muted"]), 1))
-                p.drawText(QRectF(0, yy - 8, left - 6, 16), Qt.AlignRight | Qt.AlignVCenter, f"{t:.2f}")
-            for v, col, lab in pan.get("hlines", []):
-                pen = QPen(QColor(col), 1, Qt.DashLine)
-                p.setPen(pen)
-                p.drawLine(QPointF(left, Y(v)), QPointF(W - right, Y(v)))
-                p.drawText(QRectF(left + 4, Y(v) - 15, 220, 14), Qt.AlignLeft, lab)
-            for (lab, col, v), vv in zip(pan["lines"], vals):
+                p.fillRect(QRectF(xa, py0, max(xb - xa, 1.5), phh), c)
+            ticks, dec = nice_ticks(lo, hi, target=5)
+            if pan.get("ydec") is not None:                  # e.g. years / counts: whole numbers only
+                dec = pan["ydec"]
+                ticks = sorted({round(t_) for t_ in ticks})
+            grid = QColor(C["border"])
+            grid.setAlpha(110)
+            for tv in ticks:
+                if lo <= tv <= hi:
+                    p.setPen(QPen(grid, 1))
+                    p.drawLine(QPointF(left, Y(tv)), QPointF(left + pw, Y(tv)))
+            for v_, col, _lab in pan.get("hlines", []):
+                p.setPen(QPen(QColor(col), 1, Qt.DashLine))
+                p.drawLine(QPointF(left, Y(v_)), QPointF(left + pw, Y(v_)))
+            for ln, vv in zip(pan["lines"], vals):
+                col = ln[1]
+                dash = len(ln) > 3 and ln[3] == "dash"
                 path = QPainterPath()
                 pen_down = False
                 xs = pan.get("x", self.kp)
@@ -134,20 +167,52 @@ class KPChart(QWidget):
                     else:
                         path.moveTo(pt)
                         pen_down = True
-                p.setPen(QPen(QColor(col), 1.4))
+                p.setPen(QPen(QColor(col), 1.4, Qt.DashLine if dash else Qt.SolidLine))
                 p.drawPath(path)
-            # legend + y label
-            lx = left + 6
-            for lab, col, _v in pan["lines"]:
+                if len(xs) <= 60:                            # few values (e.g. years): mark them
+                    p.setBrush(QColor(col))
+                    for k, z in zip(xs, vv):
+                        if np.isfinite(z):
+                            p.drawEllipse(QPointF(X(k), Y(z)), 2.6, 2.6)
+                    p.setBrush(Qt.NoBrush)
+            # reference-line labels: right end, on a background box, pushed apart when close
+            used = []
+            back = QColor(C["bg"])
+            back.setAlpha(215)
+            for v_, col, lab in sorted(pan.get("hlines", []), key=lambda h: Y(h[0])):
+                if not lab:
+                    continue
+                tw = fm.horizontalAdvance(lab) + 8
+                yy = Y(v_) - lh - 1
+                if yy < py0 + 1:
+                    yy = Y(v_) + 2
+                for u in used:
+                    if abs(yy - u) < lh + 1:
+                        yy = u + lh + 1
+                used.append(yy)
+                box = QRectF(left + pw - tw - 4, yy, tw, lh)
+                p.fillRect(box, back)
                 p.setPen(QPen(QColor(col), 1))
-                p.drawText(QRectF(lx, y0 + 2, 200, 14), Qt.AlignLeft, "■ " + lab)
-                lx += p.fontMetrics().horizontalAdvance("■ " + lab) + 14
+                p.drawText(box, Qt.AlignCenter, lab)
+            p.restore()
+            p.setPen(QPen(QColor(C["border"]), 1))
+            p.drawRect(rect)
             p.setPen(QPen(QColor(C["muted"]), 1))
-            p.drawText(QRectF(W - right - 200, y0 + 2, 196, 14), Qt.AlignRight, pan.get("ylabel", ""))
+            for tv in ticks:
+                if lo <= tv <= hi:
+                    p.drawText(QRectF(0, Y(tv) - lh / 2, left - 6, lh), Qt.AlignRight | Qt.AlignVCenter, f"{tv:.{dec}f}")
+        # ---- x axis
         p.setPen(QPen(QColor(C["muted"]), 1))
-        for t in np.linspace(k0, k1, 6):
-            p.drawText(QRectF(X(t) - 40, H - bottom + 4, 80, 14), Qt.AlignHCenter, f"{t:.{getattr(self, 'xdec', 3)}f}")
-        p.drawText(QRectF(0, H - bottom + 4, left - 6, 14), Qt.AlignRight, getattr(self, "xlabel", None) or dist_label())
+        xd = getattr(self, "xdec", 3)
+        xt, xdec = nice_ticks(k0, k1, target=7)
+        for t in xt:
+            if k0 - 1e-9 <= t <= k1 + 1e-9:
+                txt = f"{t:.{0 if xd == 0 else max(xdec, 0)}f}"
+                tw = fm.horizontalAdvance(txt)
+                x_ = min(max(X(t) - tw / 2, left - 4), W - right - tw)
+                p.drawText(QRectF(x_, H - bottom + 4, tw + 2, lh), Qt.AlignLeft, txt)
+        xl = getattr(self, "xlabel", None) or dist_label()
+        p.drawText(QRectF(2, H - bottom + 4, left - 10, lh), Qt.AlignLeft, xl)
         p.end()
 
 
@@ -587,14 +652,15 @@ class CableDialog(QDialog):
             dl = [("DoB", GREEN, se["dob"])]
             if se.get("dob_reported") is not None:
                 dl.append(("Reported DoB", PRE, se["dob_reported"]))
-            panels = [{"lines": lines, "bands": bands, "ylabel": zl, "invert": False},
+            panels = [{"lines": lines, "bands": bands, "ylabel": zl, "invert": self.depth},
                       {"lines": dl, "bands": bands, "ylabel": "DoB (m)",
                        "hlines": [(r["params"]["target"], RED, f"target {r['params']['target']:g} m"),
                                   (0.0, GREY, "seabed")]}]
         elif r["kind"] == "span":
             bands = [(g["kp_from"], g["kp_to"], RED if g["flag"] == "SPAN" else ORANGE) for g in r["segments"]]
             panels = [{"lines": [("Seabed", SEABED, self._elev(se["seabed"])),
-                                 ("Cable top", CABLE, self._elev(se["cable_top"]))], "bands": bands, "ylabel": zl},
+                                 ("Cable top", CABLE, self._elev(se["cable_top"]))], "bands": bands, "ylabel": zl,
+                       "invert": self.depth},
                       {"lines": [("Gap", ORANGE, se["gap"])], "bands": bands, "ylabel": "Gap (m)",
                        "hlines": [(r["params"]["gap_min"], RED, f"min gap {r['params']['gap_min']:g} m")]}]
         else:
@@ -604,7 +670,7 @@ class CableDialog(QDialog):
                 lines.insert(0, ("Pre-lay", PRE, self._elev(se["pre"])))
             if "cable_top" in se:
                 lines.append(("Cable top", CABLE, self._elev(se["cable_top"])))
-            panels = [{"lines": lines, "bands": bands, "ylabel": zl},
+            panels = [{"lines": lines, "bands": bands, "ylabel": zl, "invert": self.depth},
                       {"lines": [("As-built − design (crest)", ORANGE, se["crest_error"])], "bands": bands,
                        "ylabel": "Δ (m)", "hlines": [(-r["params"]["tol"], RED, f"−{r['params']['tol']:g} m"),
                                                      (0.0, GREY, "design")]}]

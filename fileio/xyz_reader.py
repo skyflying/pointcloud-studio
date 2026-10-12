@@ -14,6 +14,7 @@ DELIMITERS = {
     "tab": ("Tab", "\t"),
     "comma": ("Comma  ,", ","),
     "semicolon": ("Semicolon  ;", ";"),
+    "pipe": ("Pipe  |", "|"),
 }
 ROLE_CUSTOM = "Custom"
 ROLE_IGNORE = "Ignore"
@@ -69,7 +70,7 @@ def _is_numeric_row(tokens):
 def detect_delimiter(lines):
     sample = [l for l in lines if l.strip()][-30:]
     best, best_score = "whitespace", 0
-    for key in ("comma", "tab", "semicolon", "whitespace"):
+    for key in ("comma", "tab", "semicolon", "pipe", "whitespace"):
         score = sum(_is_numeric_row(split_line(l, key)) for l in sample)
         if score > best_score:
             best, best_score = key, score

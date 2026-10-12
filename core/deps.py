@@ -33,6 +33,7 @@ PACKAGES = [
     ("rasterio", "rasterio>=1.3", False, "GeoTIFF import / export"),
     ("shapefile", "pyshp>=2.3", False, "Shapefile routes, polygons and contours"),
     ("contourpy", "contourpy>=1.0", False, "contour lines"),
+    ("openpyxl", "openpyxl>=3.1", False, "Excel workbook export"),
 ]
 BUILD_PACKAGES = [("PyInstaller", "pyinstaller", True, "building the app")]
 

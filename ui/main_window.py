@@ -39,6 +39,7 @@ from ui.analysis_mixin import AnalysisMixin, ContourMixin, DesignMixin
 from ui.cable_mixin import CableMixin
 from ui.seabed_mixin import SeabedMixin
 from ui.land_mixin import LandMixin
+from ui.multiyear_ui import MultiYearMixin
 from ui.subset_mixin import ClassifyMixin, FilterMixin, RouteMixin, SubsetMixin
 from ui.export_dialog import ExportDialog
 from ui.import_dialog import XyzImportDialog
@@ -115,7 +116,7 @@ class EmptyState(QWidget):
 
 
 # ---------------------------------------------------------------- main window
-class MainWindow(LandMixin, SeabedMixin, CableMixin, ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteMixin, FilterMixin, SubsetMixin, ProjectFileMixin, ProjectMixin, QMainWindow):
+class MainWindow(MultiYearMixin, LandMixin, SeabedMixin, CableMixin, ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteMixin, FilterMixin, SubsetMixin, ProjectFileMixin, ProjectMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
@@ -137,6 +138,7 @@ class MainWindow(LandMixin, SeabedMixin, CableMixin, ClassifyMixin, ContourMixin
         self._init_cable_state()
         self._init_seabed_state()
         self._init_land_state()
+        self._init_multiyear_state()
         self.region_visible = self.subset_visible = self.reviewed_visible = True
         self._filter_saved = None
         self.sections = []
@@ -257,6 +259,8 @@ class MainWindow(LandMixin, SeabedMixin, CableMixin, ClassifyMixin, ContourMixin
                                triggered=lambda: self.open_cable_dialog(0))
         self.act_span = QAction("Free Spans…", self, triggered=lambda: self.open_cable_dialog(1))
         self.act_berm = QAction("Rock Berm As-built…", self, triggered=lambda: self.open_cable_dialog(2))
+        self.act_multiyear = QAction("Multi-year Cable Assessment…", self, shortcut="Ctrl+Shift+Y",
+                                     triggered=self.open_multiyear_dialog)
         self.act_structs = QAction("Import Structures…", self, triggered=self.import_structures)
         self.act_scour = QAction("Scour Monitoring…", self, triggered=lambda: self.open_seabed_dialog(0))
         self.act_sandwave = QAction("Sand Wave Migration…", self, triggered=lambda: self.open_seabed_dialog(1))
@@ -317,7 +321,7 @@ class MainWindow(LandMixin, SeabedMixin, CableMixin, ClassifyMixin, ContourMixin
         m_cab.addAction(self.act_route)
         m_cab.addAction(self.act_structs)
         m_cab.addSeparator()
-        for a in (self.act_dob, self.act_span, self.act_berm):
+        for a in (self.act_dob, self.act_span, self.act_berm, self.act_multiyear):
             m_cab.addAction(a)
         m_cab.addSeparator()
         for a in (self.act_scour, self.act_sandwave):

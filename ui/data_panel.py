@@ -202,7 +202,7 @@ class DataCard(Card):
         if getattr(ds, "z_flipped", False) or (hasattr(ds.obj, "source") and ds.obj.source.get("z_is_depth")):
             info += " · Z from depths"
         if getattr(ds, "survey_date", None):
-            info += f" · surveyed {ds.survey_date}"
+            info += (" · simulated " if getattr(ds, "simulated", False) else " · surveyed ") + ds.survey_date
         if editing:
             info += " · editing"
         lab = muted(info)

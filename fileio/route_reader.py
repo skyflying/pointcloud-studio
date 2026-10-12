@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 import numpy as np
 import pandas as pd
@@ -11,36 +12,163 @@ from core.route import Route
 from fileio.xyz_reader import DELIMITERS
 
 ROUTE_ROLES = ["Easting (X)", "Northing (Y)", "Longitude", "Latitude", "KP", "Route ID",
-               "Cable top (elevation)", "Cable top (depth, + down)", "DoB (reported)", "Ignore"]
+               "Cable top (elevation)", "Cable top (depth, + down)", "DoB (reported)",
+               "Seabed (elevation)", "Seabed (depth, + down)", "Ignore"]
+Z_UNITS = {"m": 1.0, "cm": 0.01, "mm": 0.001, "ft": 0.3048}
+DEFAULT_OPTS = {"decimal_comma": False, "comment": "", "z_unit": "m", "z_offset": 0.0, "z_ref": "top",
+                "diameter": 0.2, "sort_kp": False}
+
+
+def parse_angle(t):
+    """Decimal degrees or degrees-minutes(-seconds) with an optional hemisphere letter:
+    120.5 · -22.25 · 120°30'15.2"E · 120 30 15.2 E · 22 15.254N · N22°15.254' → float (S / W negative)."""
+    if t is None:
+        return np.nan
+    s = str(t).strip().upper().replace(",", ".")
+    if not s:
+        return np.nan
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    sign = -1.0 if (s.startswith("-") or any(h in s for h in "SW")) else 1.0
+    nums = re.findall(r"\d+(?:\.\d+)?", s)
+    if not nums:
+        return np.nan
+    v = [float(n) for n in nums[:3]]
+    deg = v[0] + (v[1] / 60.0 if len(v) > 1 else 0.0) + (v[2] / 3600.0 if len(v) > 2 else 0.0)
+    return sign * deg
+
+
+def _numcol(series, decimal_comma=False):
+    s = series.astype(str).str.strip()
+    if decimal_comma:
+        s = s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
+    return pd.to_numeric(s, errors="coerce").to_numpy()
+
+
+def cable_level(values, is_depth, opts):
+    """Raw cable values → top-of-cable elevation (unit, datum offset, depth sign, top / centre / bottom)."""
+    z = np.asarray(values, float) * Z_UNITS.get(opts.get("z_unit", "m"), 1.0)
+    z = -z if is_depth else z
+    z = z + float(opts.get("z_offset", 0.0))
+    ref = opts.get("z_ref", "top")
+    d = float(opts.get("diameter", 0.2))
+    if ref == "centre":
+        z = z + d / 2.0
+    elif ref == "bottom":
+        z = z + d
+    return z
+
+
+def _level(values, is_depth, opts):
+    z = np.asarray(values, float) * Z_UNITS.get(opts.get("z_unit", "m"), 1.0)
+    return (-z if is_depth else z) + float(opts.get("z_offset", 0.0))
 CABLE_ROLES = ("Cable top (elevation)", "Cable top (depth, + down)", "DoB (reported)")
 
 
-def read_shp(path, layer=None):
+Z_FIELD_KEYS = ("toc", "top of cable", "cable top", "cable z", "top z", "cable_z", "z", "elevation", "depth",
+                "toc depth", "cable depth")
+SEABED_KEYS = ("seabed", "msbl", "seabed z", "seabed depth", "water depth", "wd")
+KP_KEYS = ("kp", "chainage", "km", "kmp")
+NAME_KEYS = ("name", "route", "route_name", "cable", "id", "line", "label")
+DOB_KEYS = ("dob", "burial", "depth of burial", "doc")
+
+
+def _find(fields, keys):
+    low = {str(f).lower().replace("_", " "): f for f in fields}
+    for k in keys:
+        if k in low:
+            return low[k]
+    for k in keys:
+        for lf, f in low.items():
+            if len(k) > 2 and lf.startswith(k):
+                return f
+    return None
+
+
+def vector_fields(feats):
+    """Attribute names of the features and automatic guesses for the route import."""
+    fields = list(dict.fromkeys(k for f in feats for k in f["attrs"]))
+    has_geom_z = any(p.shape[1] >= 3 and np.any(np.abs(p[:, 2]) > 1e-9) for f in feats for p in f["parts"])
+    zf = _find(fields, Z_FIELD_KEYS)
+    guess = {"name": _find(fields, NAME_KEYS), "kp": _find(fields, KP_KEYS), "dob": _find(fields, DOB_KEYS),
+             "seabed": _find(fields, SEABED_KEYS),
+             "z": "geometry" if has_geom_z else zf,
+             "z_depth": bool(zf and "depth" in str(zf).lower()) and not has_geom_z}
+    return fields, has_geom_z, guess
+
+
+def routes_from_features(feats, base, opts):
+    """Lines → one route each; points → one route per value of the name field (or one for all), ordered by
+    the KP field (or file order). opts: name / kp / z ('geometry', a field, or None) / z_depth / dob / seabed /
+    seabed_depth fields + DEFAULT_OPTS (z unit, offset, top / centre / bottom, diameter)."""
+    o = dict(DEFAULT_OPTS, **opts)
+
+    def fnum(a, k):
+        try:
+            v = a.get(k) if k else None
+            return float(str(v).replace(",", ".")) if v not in (None, "") else np.nan
+        except (TypeError, ValueError):
+            return np.nan
+    routes = []
+    lines = [f for f in feats if f["type"] == "LineString"]
+    for k, f in enumerate(lines):
+        a = f["attrs"]
+        p = f["parts"][0]
+        label = str(a.get(o.get("name"))) if o.get("name") and a.get(o.get("name")) not in (None, "") else f"{base} {k + 1}"
+        z = None
+        if o.get("z") == "geometry" and p.shape[1] >= 3 and np.any(np.abs(p[:, 2]) > 1e-9):
+            z = cable_level(p[:, 2], o.get("z_depth", False), o)
+        kp0 = fnum(a, o.get("kp"))
+        r = Route(label, p[:, :2], z=z, meta={"attributes": a})
+        if np.isfinite(kp0):
+            r.start_kp = kp0
+        routes.append(r)
+    pts = [f for f in feats if f["type"] == "Point"]
+    if pts and not lines:
+        groups = {}
+        for f in pts:
+            key = str(f["attrs"].get(o["name"])) if o.get("name") else base
+            groups.setdefault(key, []).append(f)
+        for key, fs in groups.items():
+            xy = np.array([f["parts"][0][0, :2] for f in fs])
+            kp = np.array([fnum(f["attrs"], o.get("kp")) for f in fs]) if o.get("kp") else None
+            if o.get("z") == "geometry":
+                raw = np.array([f["parts"][0][0, 2] if f["parts"][0].shape[1] >= 3 else np.nan for f in fs])
+            elif o.get("z"):
+                raw = np.array([fnum(f["attrs"], o["z"]) for f in fs])
+            else:
+                raw = None
+            z = cable_level(raw, o.get("z_depth", False), o) if raw is not None else None
+            dob = np.array([fnum(f["attrs"], o.get("dob")) for f in fs]) if o.get("dob") else None
+            if z is None and o.get("seabed") and dob is not None:
+                sbv = _level(np.array([fnum(f["attrs"], o["seabed"]) for f in fs]), o.get("seabed_depth", False), o)
+                z = sbv - dob
+            order = np.arange(len(fs))
+            if kp is not None and np.isfinite(kp).all():
+                order = np.argsort(kp, kind="stable")
+            if len(xy) < 2:
+                continue
+            r = Route(key if o.get("name") else base, xy[order], kp=kp[order] if kp is not None and
+                      np.isfinite(kp).all() else None, z=z[order] if z is not None else None,
+                      dob=dob[order] if dob is not None else None)
+            routes.append(r)
+    return routes
+
+
+def read_shp(path, layer=None, opts=None):
     """Any vector file (Shapefile, GeoPackage, GeoJSON, KML/KMZ, GPX, DXF) → (routes, crs_guess, info).
-    Lines → one route per line; points (≥ 2) → one route in file order. 3D lines keep their Z
-    (offered as cable-top level)."""
+    Lines → one route per line; points → routes built from the points (e.g. top-of-cable survey points),
+    grouped by the name field and ordered by KP. The cable level comes from the geometry Z or a field
+    (auto-detected; `opts` overrides — see routes_from_features)."""
     from fileio import vector_io
     feats, crs, vinfo = vector_io.read(path, layer)
     base = os.path.splitext(os.path.basename(path))[0]
-    routes, pts = [], []
-    keys = ("name", "route", "route_name", "cable", "id", "line", "label")
-    for k, f in enumerate(feats):
-        rec = f["attrs"]
-        low = {str(a).lower(): a for a in rec}
-        nf = next((low[x] for x in keys if x in low and rec[low[x]] not in (None, "")), None)
-        label = str(rec[nf]) if nf else f"{base} {k + 1}"
-        if f["type"] == "LineString":
-            p = f["parts"][0]
-            zz = None
-            if p.shape[1] >= 3:
-                zz = p[:, 2].astype(np.float64)
-                if not np.any(np.abs(zz) > 1e-9):
-                    zz = None                                  # all-zero Z = a 2D line
-            routes.append(Route(label, p[:, :2], meta={"attributes": rec, "shp_z": zz}))
-        elif f["type"] == "Point":
-            pts.append(f["parts"][0][0, :2])
-    if len(pts) >= 2 and not routes:
-        routes.append(Route(base, np.asarray(pts, float)))
+    fields, has_z, guess = vector_fields(feats)
+    o = dict(guess)
+    o.update(opts or {})
+    routes = routes_from_features(feats, base, o)
     if crs is None and path.lower().endswith(".shp"):
         prj = os.path.splitext(path)[0] + ".prj"
         crs = crsmod.guess_from_prj(prj) if os.path.isfile(prj) else None
@@ -48,36 +176,54 @@ def read_shp(path, layer=None):
     return routes, crs, info
 
 
-def read_route_table(path, skip_rows, delim_key, roles, encoding=None, kp_unit="km", start_kp=0.0):
-    """CSV/TXT route (RPL). roles: one entry of ROUTE_ROLES per column. Returns (routes, geographic: bool)."""
+def read_route_table(path, skip_rows, delim_key, roles, encoding=None, kp_unit="km", start_kp=0.0, opts=None):
+    """CSV/TXT route (RPL, SBI / TSS cable data). roles: one entry of ROUTE_ROLES per column.
+    opts: see DEFAULT_OPTS (decimal comma, comment prefix, Z unit / datum offset, Z refers to the top / centre /
+    bottom of the cable, cable diameter, sort by KP). Returns (routes, geographic: bool)."""
+    o = dict(DEFAULT_OPTS, **(opts or {}))
     use = {i: r for i, r in enumerate(roles) if r != "Ignore"}
     df = pd.read_csv(path, sep=DELIMITERS[delim_key][1], header=None, skiprows=skip_rows, usecols=sorted(use),
                      encoding=encoding, engine="python" if delim_key == "whitespace" else "c",
-                     on_bad_lines="skip", skip_blank_lines=True, dtype=str)
+                     on_bad_lines="skip", skip_blank_lines=True, dtype=str,
+                     comment=(o["comment"][:1] or None))
     col = {r: i for i, r in use.items()}
     geo = "Longitude" in col and "Latitude" in col
     xk, yk = ("Longitude", "Latitude") if geo else ("Easting (X)", "Northing (Y)")
     if xk not in col or yk not in col:
         raise ValueError("Assign Easting + Northing, or Longitude + Latitude")
-    x = pd.to_numeric(df[col[xk]], errors="coerce").to_numpy()
-    y = pd.to_numeric(df[col[yk]], errors="coerce").to_numpy()
-    kp = pd.to_numeric(df[col["KP"]], errors="coerce").to_numpy() if "KP" in col else None
+    dc = o["decimal_comma"]
+    if geo:
+        x = np.array([parse_angle(v) for v in df[col[xk]]], float)
+        y = np.array([parse_angle(v) for v in df[col[yk]]], float)
+    else:
+        x = _numcol(df[col[xk]], dc)
+        y = _numcol(df[col[yk]], dc)
+    kp = _numcol(df[col["KP"]], dc) if "KP" in col else None
     if kp is not None and kp_unit == "m":
         kp = kp / 1000.0
     rid = df[col["Route ID"]].astype(str).to_numpy() if "Route ID" in col else np.full(len(x), "")
     ztop = None
     if "Cable top (elevation)" in col:
-        ztop = pd.to_numeric(df[col["Cable top (elevation)"]], errors="coerce").to_numpy()
+        ztop = cable_level(_numcol(df[col["Cable top (elevation)"]], dc), False, o)
     elif "Cable top (depth, + down)" in col:
-        ztop = -pd.to_numeric(df[col["Cable top (depth, + down)"]], errors="coerce").to_numpy()
-    dob = pd.to_numeric(df[col["DoB (reported)"]], errors="coerce").to_numpy() if "DoB (reported)" in col else None
+        ztop = cable_level(_numcol(df[col["Cable top (depth, + down)"]], dc), True, o)
+    dob = (_numcol(df[col["DoB (reported)"]], dc) * Z_UNITS.get(o["z_unit"], 1.0)) if "DoB (reported)" in col else None
+    sb = None
+    if "Seabed (elevation)" in col:
+        sb = _level(_numcol(df[col["Seabed (elevation)"]], dc), False, o)
+    elif "Seabed (depth, + down)" in col:
+        sb = _level(_numcol(df[col["Seabed (depth, + down)"]], dc), True, o)
+    if ztop is None and sb is not None and dob is not None:
+        ztop = sb - dob                          # cable top from the seabed and the reported burial
     ok = np.isfinite(x) & np.isfinite(y)
     if kp is not None:
         ok &= np.isfinite(kp)
     base = os.path.splitext(os.path.basename(path))[0]
     routes = []
     for name in dict.fromkeys(rid[ok]):                        # keep file order
-        m = ok & (rid == name)
+        m = np.flatnonzero(ok & (rid == name))
+        if o["sort_kp"] and kp is not None:
+            m = m[np.argsort(kp[m], kind="stable")]
         xy = np.column_stack([x[m], y[m]])
         if len(xy) < 2:
             continue
@@ -91,6 +237,8 @@ def read_route_table(path, skip_rows, delim_key, roles, encoding=None, kp_unit="
 
 
 HEADER_KEYS = [("DoB (reported)", ("dob", "burial", "depth of burial", "doc")),
+               ("Seabed (depth, + down)", ("seabed depth", "water depth", "wd", "msbl depth", "sb depth")),
+               ("Seabed (elevation)", ("seabed", "msbl", "sb z", "seabed z", "seabed level")),
                ("Cable top (elevation)", ("toc", "top of cable", "cable top", "cable z", "top z", "z", "elevation")),
                ("Cable top (depth, + down)", ("toc depth", "cable depth", "top depth", "depth")),
                ("KP", ("kp", "chainage", "km", "kmp")), ("Latitude", ("lat",)), ("Longitude", ("lon", "long")),

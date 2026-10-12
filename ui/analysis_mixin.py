@@ -63,6 +63,8 @@ class AnalysisMixin:
             self._seabed_context()
         if hasattr(self, "_land_context"):
             self._land_context()
+        if hasattr(self, "_multiyear_context"):
+            self._multiyear_context()
         if self.volume_dialog is None and getattr(self, "design_dialog", None) is None:
             return
         surfs = [(d.id, d.name, d.obj.cell if isinstance(d.obj, Dem) else None)

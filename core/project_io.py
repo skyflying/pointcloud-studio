@@ -43,7 +43,7 @@ def save_project(path, project, sections=(), view=None, subsets=None):
                  "z_flipped": bool(getattr(d, "z_flipped", False)),
                  "crs": crsmod.to_text(d.crs), "source_crs": crsmod.to_text(d.source_crs),
                  "import_opts": d.import_opts, "derived_from": d.derived_from, "edit_version": d.edit_version,
-                 "survey_date": getattr(d, "survey_date", None)}
+                 "survey_date": getattr(d, "survey_date", None), "simulated": bool(getattr(d, "simulated", False))}
         if d.path:
             entry["path"] = os.path.abspath(d.path)
             try:
@@ -55,6 +55,9 @@ def save_project(path, project, sections=(), view=None, subsets=None):
             r = d.obj
             entry["route"] = {"xy": r.xy.tolist(), "kp": None if r.kp is None else r.kp.tolist(),
                               "start_kp": r.start_kp, "name": r.name,
+                              "attributes": {str(k): (v if isinstance(v, (int, float, str, bool)) or v is None
+                                                      else str(v))
+                                             for k, v in (r.meta.get("attributes") or {}).items()},
                               "z": None if r.z is None else [None if not np.isfinite(v) else float(v) for v in r.z],
                               "dob": None if r.dob is None else [None if not np.isfinite(v) else float(v)
                                                                  for v in r.dob]}

@@ -509,6 +509,68 @@ def run(app=None):
         return (f"slope {sl:.2f}° / aspect {asp:.1f}° · DoD {dep:.0f} m³ · stockpile {v:.1f} m³ (523.6) · road fill "
                 f"{fill:.0f} m³ (2000) · inundation {ia:.0f} m² (1800) · clearance {segs[0]['min_clearance']:.2f} m")
 
+    def _batch_check(r, sea):
+        """Three shuffled / reversed segments of one string → one 1000 m cable; batch + workbook sheets."""
+        from core import multiyear_batch as mb
+        from core.route import Route
+        segs = []
+        for a_, b_, nm in ((0, 300, "A"), (300, 650, "B"), (650, 1000, "C")):
+            xy = r.xy[(r.cum >= a_ - 1e-9) & (r.cum <= b_ + 1e-9)]
+            segs.append(Route(nm, xy[::-1] if nm == "B" else xy, z=np.full(len(xy), -21.5),
+                              meta={"attributes": {"string": "S1"}}))
+        st_ = mb.stitch([segs[2], segs[1], segs[0]], "string")
+        assert len(st_) == 1 and abs(st_[0].length - 1000.0) < 1e-6 and len(st_[0].meta["members"]) == 3, st_
+        items = [(x.name, "cable", x) for x in segs] + [(st_[0].name, "string", st_[0])]
+        b = mb.run_batch(items, [{"name": str(2025 + t), "year": 2025 + t, "obj": sea(t)} for t in range(5)],
+                         dict(required=1.0, reburial_to=1.5, mode="cumulative"))
+        sh = mb.workbook_sheets(b, {"mode": "cumulative"})
+        assert len(b["items"]) == 4 and len(sh["Summary"]) == 4 and len(sh["Points"]) > 2000, sh.keys()
+        return " · batch: 3 segments stitched into 1000 m, 4 items, workbook sheets"
+
+    def multiyear_check():
+        """Seabed dropping 0.3 m/yr over 300 m, cable 1.5 m below the original seabed, required cover 1.0 m:
+        re-burial first needed 2027, exposure 2031, free span 2032, 300 m → 3.0 h at 100 m/h."""
+        from core import multiyear
+        from core.route import Route
+        from core.surface import Dem
+        X0, Y0 = 200_000.0, 2_600_000.0
+        ch = np.arange(0, 1001.0)
+        r = Route("C", np.column_stack([X0 + ch, np.full_like(ch, Y0)]), kp=ch / 1000, z=np.full_like(ch, -21.5))
+
+        def sea(t):
+            z = np.full((40, 1100), -20.0, np.float32)
+            xs = X0 - 50 + np.arange(1100) + 0.5
+            z[:, (xs >= X0 + 300) & (xs <= X0 + 600)] = -20.0 - 0.3 * t
+            return Dem(z, X0 - 50, Y0 + 20, 1.0, "s")
+        res = multiyear.assess(r, [{"name": str(2025 + t), "year": 2025 + t, "simulated": t > 0, "obj": sea(t)}
+                                   for t in range(9)], required=1.0, rate=100)
+        s_ = res["summary"]
+        assert (s_["first_reburial_year"], s_["first_exposed_year"], s_["first_span_year"]) == (2027, 2031, 2032), s_
+        h = [r_["trenching_h"] for r_ in res["table"] if r_["year"] == 2027][0]
+        assert abs(h - 3.0) < 0.05, h
+        # cumulative: re-buried to 1.5 m whenever below 1.0 m → every second year, never exposed
+        cu = multiyear.assess(r, [{"name": str(2025 + t), "year": 2025 + t, "obj": sea(t)} for t in range(9)],
+                              required=1.0, reburial_to=1.5, rate=100, mode="cumulative")["summary"]
+        assert cu["campaign_years"] == [2027, 2029, 2031, 2033] and cu["first_exposed_year"] is None, cu
+        # trencher limited to 2.0 m cover → campaigns 2027 and 2031
+        cap = multiyear.assess(r, [{"name": str(2025 + t), "year": 2025 + t, "obj": sea(t)} for t in range(9)],
+                               required=1.0, reburial_to=2.5, max_cover=2.0, mode="cumulative")["summary"]
+        assert cap["campaign_years"] == [2027, 2031], cap
+        # cable import: semicolons, decimal commas, DMS latitude / longitude, depths in cm to the cable centre
+        from fileio import route_reader as rr
+        p_ = os.path.join(tmp, "sbi.csv")
+        with open(p_, "w", encoding="utf-8") as fh:
+            fh.write("# test\nKP;Lat;Lon;TOC_cm\n0,000;N23°30'00.0\";E120°00'00.0\";2150\n"
+                     "0,010;N23°30'00.3\";E120°00'00.1\";2160\n")
+        rt, geo = rr.read_route_table(p_, 2, "semicolon", ["KP", "Latitude", "Longitude", "Cable top (depth, + down)"],
+                                      None, opts={"decimal_comma": True, "comment": "#", "z_unit": "cm",
+                                                  "z_ref": "centre", "diameter": 0.2})
+        assert geo and np.allclose(rt[0].z, [-21.4, -21.5]) and abs(rt[0].xy[0, 1] - 23.5) < 1e-9, (rt[0].z, rt[0].xy)
+        return (f"independent: re-burial {s_['first_reburial_year']}, exposed {s_['first_exposed_year']}, span "
+                f"{s_['first_span_year']} · cumulative: campaigns {', '.join(map(str, cu['campaign_years']))}, "
+                f"never exposed · 2 m trencher: {', '.join(map(str, cap['campaign_years']))} · {h:.1f} h · "
+                "EU / DMS / cm cable file read" + _batch_check(r, sea))
+
     for name, fn in (("generate LAZ (laspy + lazrs)", make_data), ("read LAZ", read_laz),
                      ("text export / import", text_roundtrip), ("TIN (Delaunay)", tin), ("DEM (TIN, shoal)", dem),
                      ("GeoTIFF with CRS", geotiff), ("LandXML", landxml), ("LAS export", las_with_crs),
@@ -518,6 +580,7 @@ def run(app=None):
                      ("scour / sand-wave migration", scour_and_sandwaves),
                      ("vector formats (SHP/GPKG/GeoJSON/KML/DXF)", vector_formats),
                      ("land: terrain / change / stockpile / road / hydro / clearance", land_analyses),
+                     ("multi-year cable assessment", multiyear_check),
                      ("project save / open", project_roundtrip), ("3D render (VisPy/OpenGL)", render)):
         step(name, fn)
 

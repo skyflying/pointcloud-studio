@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from render.colormap import get_lut
 from ui.cable_dialog import GREEN, GREY, ORANGE, RED, KPChart, _dsp, _fmt, _muted, _section
+from ui.check_helpers import ClickToggleMixin, check_bar
 from ui.theme import C, dark_titlebar
 
 EPOCH_COLORS = ["#8b919c", "#4cc9f0", "#ffd166", "#ef476f", "#06d6a0", "#b8b8ff", "#ff9f1c", "#f72585"]
@@ -72,7 +73,7 @@ class DepthMap(QWidget):
         p.end()
 
 
-class EpochTable(QTableWidget):
+class EpochTable(ClickToggleMixin, QTableWidget):
     """Surveys to use: checkbox, name, survey date (editable, YYYY-MM-DD)."""
 
     def __init__(self, on_date):
@@ -245,6 +246,7 @@ class SeabedDialog(QDialog):
         self.c_struct.currentIndexChanged.connect(self._fill_which)
         self.c_epochs = EpochTable(self.cb.seabed_set_date)
         f.addRow(_section("Surveys (DEM / TIN)"))
+        f.addRow(check_bar(self.c_epochs, "Use:"))
         f.addRow(self.c_epochs)
         self.c_grp = QButtonGroup(self)
         self.c_ff = QRadioButton("Far field: median seabed of each survey in a ring around the pile")
@@ -304,6 +306,7 @@ class SeabedDialog(QDialog):
         f.addRow("Route", self.w_route)
         self.w_epochs = EpochTable(self.cb.seabed_set_date)
         f.addRow(_section("Surveys (DEM / TIN / point cloud) — at least two, with dates"))
+        f.addRow(check_bar(self.w_epochs, "Use:"))
         f.addRow(self.w_epochs)
         self.w_m2d = QRadioButton("2D surface matching (direction + speed)")
         self.w_m1d = QRadioButton("Profile along the route (along-route shift only)")
@@ -548,7 +551,8 @@ class SeabedDialog(QDialog):
         ra = np.array([w.get("rate_along", np.nan) for w in main], float)[o]
         rt = np.array([w.get("rate", np.nan) for w in main], float)[o]
         bands = [(g["kp_from"], g["kp_to"], RED) for g in r.get("segments", [])]
-        panels = [{"lines": prof, "ylabel": "Depth (m)" if self.depth else "Elevation (m)", "bands": bands},
+        panels = [{"lines": prof, "ylabel": "Depth (m)" if self.depth else "Elevation (m)", "bands": bands,
+                   "invert": self.depth},
                   {"x": wk[o], "lines": [("rate", ORANGE, np.where(rel, rt, np.nan)),
                                          ("along route", GREEN, np.where(rel, ra, np.nan))],
                    "ylabel": "m / year (reliable windows)", "hlines": [(0.0, GREY, "")]}]
