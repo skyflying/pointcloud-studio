@@ -291,6 +291,13 @@ class ProjectMixin:
             self._set_dirty(True)
         if kind == "points" and first:
             self.file_card.set_rows(self._info_rows(obj, load_time))
+        hook = getattr(self, "_after_ingest", None)
+        if hook is not None:                          # e.g. photogrammetry: add the camera positions
+            self._after_ingest = None
+            try:
+                hook(ds)
+            except Exception as e:  # noqa: BLE001
+                self.statusBar().showMessage(f"{type(e).__name__}: {e}", 8000)
         msg = f"Loaded {name} in {load_time:.2f} s{note}"
         if getattr(self, "_lock_msg", ""):
             msg += "  ·  " + self._lock_msg
@@ -358,9 +365,9 @@ class ProjectMixin:
         for rid in list(v.refs):
             if proj.get(rid) is None or (target is not None and rid == target.id):
                 v.remove_reference(rid)
-        surf_ids = {d.id for d in proj.datasets if d.kind in ("grid", "tin")}
+        surf_ids = {d.id for d in proj.datasets if d.kind in ("grid", "tin", "mesh")}
         for d in proj.datasets:
-            if d.kind in ("grid", "tin"):
+            if d.kind in ("grid", "tin", "mesh"):
                 if d.id not in v.surfaces or v.surfaces[d.id].V is None:
                     v.set_surface(d.id, d.obj)
                     if d.opacity < 1:
@@ -384,6 +391,7 @@ class ProjectMixin:
         self._update_chips()
         self._update_surface_actions()
         self._set_dirty(self._dirty)
+        self._apply_layer_order()
         self._recompute_section()
         self._refresh_subset_if_open()
         self._volume_context()
@@ -509,6 +517,30 @@ class ProjectMixin:
         self.statusBar().showMessage(f"{ds.name}: Z sign flipped — values are now "
                                      f"{'elevations from depths' if ds.z_flipped else 'as in the file'}", 8000)
 
+    # ---------- layer order ----------
+    def _apply_layer_order(self):
+        """Data panel order → 3D drawing order (top of the list in front) for clouds and surfaces."""
+        drawable = [d for d in self.project.datasets if d.kind in ("points", "grid", "tin", "mesh")]
+        ranks = {d.id: r for r, d in enumerate(drawable)}
+        on = getattr(self, "_draw_in_order", True)
+        self.viewer.set_layer_order(ranks, self._bound_id, on)
+
+    def ds_move(self, ds_id, delta=0, to=None):
+        if not self.project.move(ds_id, delta, to):
+            return
+        self._set_dirty(True)
+        self._project_changed()
+        ds = self.project.get(ds_id)
+        if ds is not None:
+            pos = [d.id for d in self.project.datasets].index(ds_id) + 1
+            self.statusBar().showMessage(f"{ds.name}: layer {pos} of {len(self.project.datasets)}", 4000)
+
+    def set_draw_in_order(self, on):
+        from PySide6.QtCore import QSettings
+        self._draw_in_order = bool(on)
+        QSettings("PointCloudStudio", "PointCloudStudio").setValue("view/draw_in_layer_order", bool(on))
+        self._apply_layer_order()
+
     def ds_zoom(self, ds_id):
         ds = self.project.get(ds_id)
         if ds is None:
@@ -535,6 +567,8 @@ class ProjectMixin:
             self.export_dem(ds)
         elif ds.kind == "contour":
             self.export_contours(ds)
+        elif ds.kind == "mesh":
+            self.export_mesh(ds)
         else:
             self.export_tin(ds)
 
@@ -852,6 +886,7 @@ class ProjectFileMixin:
             "color_mode": v.color_mode, "depth": self.depth_mode, "z_scale": self.spin_z.value(),
             "point_size": self.sld_size.value(), "show_bar": self.scale_card.chk_bar.isChecked(),
             "hillshade": self.data_card.chk_shade.isChecked(),
+            "layer_order": self.data_card.chk_order.isChecked(),
             "scales": {m: {k: getattr(sc, k) for k in ("palette", "reverse", "amin", "amax", "vmin", "vmax", "auto",
                                                         "out_of_range")} for m, sc in v.scales.items()},
             "camera": {"center": [float(c) for c in cam.center], "elevation": float(cam.elevation),
@@ -871,6 +906,8 @@ class ProjectFileMixin:
         self.spin_z.setValue(float(st.get("z_scale", 1.0)))
         self.scale_card.chk_bar.setChecked(bool(st.get("show_bar", True)))
         self.data_card.chk_shade.setChecked(bool(st.get("hillshade", True)))
+        if "layer_order" in st:
+            self.data_card.chk_order.setChecked(bool(st["layer_order"]))
         mode = st.get("color_mode")
         i = self.cmb_color.findData(mode)
         if i >= 0:

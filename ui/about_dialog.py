@@ -14,13 +14,19 @@ from ui.theme import C, dark_titlebar
 
 def _lib_versions():
     out = []
+    import importlib.metadata as md
     for name, mod in (("PySide6", "PySide6"), ("VisPy", "vispy"), ("NumPy", "numpy"), ("SciPy", "scipy"),
-                      ("pandas", "pandas"), ("laspy", "laspy"), ("rasterio", "rasterio"), ("pyproj", "pyproj")):
+                      ("pandas", "pandas"), ("laspy", "laspy"), ("rasterio", "rasterio"), ("pyproj", "pyproj"),
+                      ("OpenCV", "cv2")):
         try:
             m = __import__(mod)
             out.append(f"{name} {getattr(m, '__version__', '?')}")
         except Exception:
             out.append(f"{name} (not installed)")
+    try:                                             # version only — importing Open3D is heavy
+        out.append(f"Open3D {md.version('open3d')}")
+    except md.PackageNotFoundError:
+        out.append("Open3D (not installed)")
     return out
 
 
@@ -89,6 +95,8 @@ SHORTCUTS = [
                        ("Ctrl+M", "Mark subset complete"), ("Ctrl+F", "Auto filter"), ("Ctrl+K", "Classify points"), ("Shift / Ctrl + drag", "Add / subtract selection")]),
     ("Project", [("Ctrl+S · Ctrl+Shift+S", "Save project · Save as"), ("Ctrl+Shift+O", "Add data")]),
     ("Surface", [("Ctrl+T", "Create TIN"), ("Ctrl+G", "Create DEM")]),
+    ("Reconstruct", [("Ctrl+Shift+P", "Photos / video → point cloud (SfM-MVS)"),
+                     ("Ctrl+Shift+M", "Mesh from point cloud")]),
     ("Lines & structures", [("Ctrl+Shift+B", "Depth of burial / cover · free spans · rock berm (tabs)"),
                             ("Ctrl+Shift+L", "Import vector layer (SHP, GPKG, GeoJSON, KML, GPX, DXF)"),
                             ("Ctrl+Shift+Y", "Multi-year cable assessment (exposure, spans, re-burial)")]),

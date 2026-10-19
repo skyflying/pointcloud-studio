@@ -21,13 +21,13 @@ from core.surface import Dem, Tin
 from core.trash import Trash
 
 KIND_LABEL = {"points": "PTS", "grid": "DEM", "tin": "TIN", "route": "RTE", "contour": "CNT", "structure": "STR",
-              "vector": "VEC"}
+              "vector": "VEC", "mesh": "MSH"}
 
 
 @dataclass
 class Dataset:
     name: str
-    kind: str                       # "points" | "grid" | "tin"
+    kind: str                       # "points" | "grid" | "tin" | "mesh" | "route" | …
     obj: object                     # PointCloud | Dem | Tin
     path: str | None = None
     crs: object = None              # pyproj CRS of the data as loaded in the project (= project CRS)
@@ -68,6 +68,8 @@ class Dataset:
                     np.array([o.x0 + nc * o.cell, o.ytop, zh]))
         if isinstance(o, Tin):
             return o.vertices.min(axis=0), o.vertices.max(axis=0)
+        if o.__class__.__name__ == "Mesh":
+            return o.bbox()
         if o.__class__.__name__ == "ContourSet":
             return o.bbox()
         if o.__class__.__name__ == "VectorLayer":
@@ -94,6 +96,8 @@ class Dataset:
             return f"{o.cell:g} m · {nc:,}×{nr:,}"
         if isinstance(o, Tin):
             return f"{len(o.triangles):,} tri"
+        if o.__class__.__name__ == "Mesh":
+            return o.size_text()
         if o.__class__.__name__ == "ContourSet":
             return f"{len(o.lines):,} lines · {o.n_levels} levels · {o.interval:g} m"
         if o.__class__.__name__ == "VectorLayer":
@@ -126,6 +130,25 @@ class Project:
             ds.obj.offset = self.origin.copy()     # every cloud uses the project origin
         self.datasets.append(ds)
         return ds
+
+    def move(self, ds_id, delta=0, to=None):
+        """Change a dataset's place in the layer list (index 0 = top). delta −1 = up, +1 = down;
+        to = 'top' | 'bottom' | an int gap index 0…n (insert before the layer now at that index —
+        what a drag-and-drop gives). Returns True if the order changed."""
+        i = next((k for k, d in enumerate(self.datasets) if d.id == ds_id), None)
+        if i is None:
+            return False
+        n = len(self.datasets)
+        if isinstance(to, int) and not isinstance(to, bool):
+            g = max(0, min(n, to))
+            j = g - 1 if g > i else g                     # the gap index shifts once the layer is taken out
+        else:
+            j = 0 if to == "top" else n - 1 if to == "bottom" else max(0, min(n - 1, i + int(delta)))
+        if j == i:
+            return False
+        ds = self.datasets.pop(i)
+        self.datasets.insert(j, ds)
+        return True
 
     def remove(self, ds_id):
         self.datasets = [d for d in self.datasets if d.id != ds_id]

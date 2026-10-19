@@ -16,6 +16,12 @@ def tin_mesh(tin, offset):
     return (tin.vertices - offset).astype(np.float32), tin.triangles, tin.vertices[:, 2].astype(np.float32)
 
 
+def mesh_mesh(m, offset):
+    """core.mesh.Mesh → (V, F, z, rgb 0..1 or None)."""
+    rgb = None if m.colors is None else (m.colors.astype(np.float32) / 255.0)
+    return (m.vertices - offset).astype(np.float32), m.faces, m.vertices[:, 2].astype(np.float32), rgb
+
+
 def dem_mesh(dem, offset):
     nr, nc = dem.z.shape
     xs, ys = dem.centers()
@@ -37,20 +43,23 @@ def dem_mesh(dem, offset):
     return V, F, zf.ravel().astype(np.float32)
 
 
-def hillshade(V, F, z_scale):
-    """Per-vertex shade factor (ambient … 1) using area-weighted vertex normals."""
+def hillshade(V, F, z_scale, two_sided=False):
+    """Per-vertex shade factor (ambient … 1) using area-weighted vertex normals.
+    two_sided: 3D meshes (walls, overhangs, closed objects) — normals keep their direction and both sides
+    are lit, instead of all normals pointing up as for terrain."""
     P = V.astype(np.float64)
     P[:, 2] *= z_scale
     e1 = P[F[:, 1]] - P[F[:, 0]]
     e2 = P[F[:, 2]] - P[F[:, 0]]
     fn = np.cross(e1, e2)
-    fn[fn[:, 2] < 0] *= -1                       # all normals point up
+    if not two_sided:
+        fn[fn[:, 2] < 0] *= -1                   # all normals point up
     n = np.zeros((len(V), 3))
     for k in range(3):
         for j in range(3):
             n[:, j] += np.bincount(F[:, k], weights=fn[:, j], minlength=len(V))
     n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
-    lam = np.clip(n @ LIGHT, 0, 1)
+    lam = np.abs(n @ LIGHT) if two_sided else np.clip(n @ LIGHT, 0, 1)
     return (AMBIENT + (1 - AMBIENT) * lam).astype(np.float32)
 
 
@@ -63,17 +72,20 @@ class SurfaceLayer:
         self.mesh.attach(self.wire)
         self.mesh.visible = False
         self.V = self.F = self.z = self.shade = None
+        self.rgb = None                 # per-vertex RGB (photogrammetric meshes, models)
+        self.two_sided = False          # 3D mesh: light both sides, keep normal directions
         self.cvals = None               # own colour values (Δ layers) + own diverging scale
         self.own_scale = None
         self.opacity = 1.0
         self.shading = True
+        self.depth_range = (0.0, 1.0)   # slice of the depth buffer (layer order, see Viewer.set_layer_order)
         self._set_gl()
 
     def _set_gl(self):
         # push the surface slightly back so points lying on it stay visible
         self.mesh.set_gl_state("translucent" if self.opacity < 1 else "opaque", depth_test=True,
                                polygon_offset_fill=True, polygon_offset=(1.0, 1.0),
-                               cull_face=False)
+                               cull_face=False, depth_range=tuple(self.depth_range))
 
     def set_data(self, V, F, z, scale, z_scale):
         self.V, self.F, self.z = V, F, z
@@ -83,14 +95,18 @@ class SurfaceLayer:
     def update_shade(self, z_scale, scale=None, upload=True):
         if self.V is None:
             return
-        self.shade = hillshade(self.V, self.F, z_scale) if self.shading else np.ones(len(self.V), np.float32)
+        self.shade = (hillshade(self.V, self.F, z_scale, self.two_sided) if self.shading
+                      else np.ones(len(self.V), np.float32))
         if upload and scale is not None:
             self.recolor(scale)
 
     def recolor(self, scale):
         if self.V is None:
             return
-        if self.cvals is not None:
+        if self.rgb is not None and self.cvals is None:
+            c = np.ones((len(self.V), 4), np.float32)
+            c[:, :3] = self.rgb
+        elif self.cvals is not None:
             c = map_scalar(self.cvals, self.own_scale)
             c[~np.isfinite(self.cvals)] = (0.35, 0.37, 0.40, 1.0)
         else:
@@ -107,4 +123,6 @@ class SurfaceLayer:
     def clear(self):
         self.V = self.F = self.z = self.shade = None
         self.cvals = self.own_scale = None
+        self.rgb = None
+        self.two_sided = False
         self.mesh.visible = False

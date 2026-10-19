@@ -13,7 +13,7 @@ from render.colormap import (
     AUTO_PERCENTILES, symmetric_range, DEFAULT_PALETTE, SCALAR_MODES, ColorScale, auto_range, compute_colors,
     full_range, map_scalar, scalar_values,
 )
-from render.surfaces import SurfaceLayer, dem_mesh, tin_mesh
+from render.surfaces import SurfaceLayer, dem_mesh, mesh_mesh, tin_mesh
 from ui.theme import SELECTION_RGBA, TRASH_DIM_RGBA, TRASH_HI_RGBA, VIEWPORT_BG
 
 VIEW_PRESETS = {
@@ -201,8 +201,8 @@ class PointCloudViewer:
         self._invalidate_height()
         self.remove_reference(rid)
         m = scene.visuals.Markers(parent=self.view.scene)
-        m.set_gl_state("opaque", depth_test=True)
-        m.order = 0
+        m.set_gl_state("opaque", depth_test=True, depth_range=self._depth_slice(rid))
+        m.order = self._draw_order(rid, 0)
         try:
             m.antialias = 0
         except Exception:
@@ -222,6 +222,40 @@ class PointCloudViewer:
         if r is not None:
             r["markers"].parent = None
             self.canvas.update()
+
+    # ---------- layer order (Data panel: top of the list is drawn in front) ----------
+    def _depth_slice(self, key):
+        """Depth-buffer slice of a layer: the top layer gets the nearest slice, so it is drawn in front of
+        the layers below it; inside a layer normal depth testing still applies."""
+        ranks = getattr(self, "_layer_ranks", None) or {}
+        if not getattr(self, "_layer_order_on", False) or key not in ranks:
+            return (0.0, 1.0)
+        n = max(len(ranks), 1)
+        r = ranks[key]
+        return (r / n, (r + 1) / n)
+
+    def _draw_order(self, key, default):
+        ranks = getattr(self, "_layer_ranks", None) or {}
+        if key not in ranks:
+            return default
+        return -1 - ranks[key]          # bottom layer first (translucent layers blend over the ones below)
+
+    def set_layer_order(self, ranks, bound_key=None, enabled=True):
+        """ranks: {layer key: rank} for drawable layers (0 = top). bound_key: key of the edit-target cloud
+        (drawn by self.markers). enabled False: plain 3D depth (layer order ignored)."""
+        self._layer_ranks = dict(ranks)
+        self._layer_order_on = bool(enabled)
+        self._bound_key = bound_key
+        self.markers.set_gl_state("opaque", depth_test=True, depth_range=self._depth_slice(bound_key))
+        self.markers.order = self._draw_order(bound_key, 0)
+        for rid, r in self.refs.items():
+            r["markers"].set_gl_state("opaque", depth_test=True, depth_range=self._depth_slice(rid))
+            r["markers"].order = self._draw_order(rid, 0)
+        for key, layer in self.surfaces.items():
+            layer.depth_range = self._depth_slice(key)
+            layer.mesh.order = self._draw_order(key, -1)
+            layer._set_gl()
+        self.canvas.update()
 
     def set_reference_visible(self, rid, on):
         self._invalidate_height()
@@ -433,11 +467,20 @@ class PointCloudViewer:
             if obj is None:
                 return
             self.surfaces[key] = SurfaceLayer(self.view.scene, str(key))
+            self.surfaces[key].depth_range = self._depth_slice(key)
+            self.surfaces[key].mesh.order = self._draw_order(key, -1)
+            self.surfaces[key]._set_gl()
         layer = self.surfaces[key]
         if obj is None:
             layer.clear()
         else:
-            V, F, z = tin_mesh(obj, self.origin) if isinstance(obj, Tin) else dem_mesh(obj, self.origin)
+            rgb = None
+            if obj.__class__.__name__ == "Mesh":
+                V, F, z, rgb = mesh_mesh(obj, self.origin)
+            else:
+                V, F, z = tin_mesh(obj, self.origin) if isinstance(obj, Tin) else dem_mesh(obj, self.origin)
+            layer.rgb = rgb
+            layer.two_sided = obj.__class__.__name__ == "Mesh" and obj.meta.get("method") != "delaunay25d"
             if getattr(obj, "cvals", None) is not None:
                 from render.colormap import ColorScale
                 layer.cvals = obj.cvals.ravel().astype(np.float32)

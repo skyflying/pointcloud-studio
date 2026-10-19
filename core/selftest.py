@@ -571,6 +571,70 @@ def run(app=None):
                 f"never exposed · 2 m trencher: {', '.join(map(str, cap['campaign_years']))} · {h:.1f} h · "
                 "EU / DMS / cm cable file read" + _batch_check(r, sea))
 
+    def meshes_and_models():
+        from core import mesh as M
+        from core import modeling as MD
+        rng = np.random.default_rng(1)
+        pc = ctx["pc"]
+        m = M.build_mesh(pc.xyz, pc.active_indices()[::5], "delaunay25d", max_edge=8, smooth=2)
+        q = rng.normal(size=(8000, 3))
+        q = q / np.linalg.norm(q, axis=1)[:, None] * (5 + rng.normal(0, 0.02, (8000, 1)))
+        a = M.build_mesh(q, np.arange(len(q)), "alpha3d")
+        assert a.is_closed and abs(a.volume / (4 / 3 * np.pi * 125) - 1) < 0.1, (a.volume, a.meta)
+        p_ = os.path.join(tmp, "m.ply")
+        for ext in (".obj", ".ply", ".stl", ".dxf"):
+            M.export_mesh(a, p_[:-4] + ext)
+        g = np.c_[rng.uniform(0, 40, (15000, 2)), rng.normal(0, 0.02, 15000)]
+        x, y = rng.uniform(10, 20, 5000), rng.uniform(10, 18, 5000)
+        b = np.c_[x, y, 6 + 3 * (1 - np.abs(y - 14) / 4)]
+        xyz = np.vstack([g, b])
+        cls = np.r_[np.full(len(g), 2), np.full(len(b), 6)]
+        bd = MD.building_models(xyz, cls, np.arange(len(xyz)), lod=2)
+        v = bd["buildings"][0]["volume_m3"]
+        assert len(bd["buildings"]) == 1 and abs(v - 600) < 30, bd["buildings"]
+        t = rng.uniform(0, 2 * np.pi, 3000)
+        pile = np.c_[3 + 1.2 * np.cos(t), 4 + 1.2 * np.sin(t), rng.uniform(-8, 2, 3000)]
+        cy = MD.detect_cylinders(pile, np.arange(len(pile)), thr=0.02)["cylinders"]
+        assert cy and abs(cy[0]["radius"] - 1.2) < 0.02, cy
+        pl = MD.detect_planes(xyz, np.arange(len(xyz)), thr=0.08, min_points=300)["segments"]
+        assert len(pl) >= 3, len(pl)
+        return (f"TIN mesh {len(m.faces):,} tri · alpha shape {a.volume:.0f} m³ (sphere 524) · LOD2 {v:.0f} m³ "
+                f"(600) · pile r {cy[0]['radius']:.3f} m · {len(pl)} planes")
+
+    def photogrammetry():
+        import cv2  # noqa: F401  (optional: SKIP when OpenCV is not installed)
+        from core.sfm import synthetic
+        from core.sfm.geometry import umeyama
+        from core.sfm.pipeline import PhotoParams, run_photogrammetry
+        sc = synthetic.make_scene(os.path.join(tmp, "sfm"), n_x=3, n_y=2, size=(640, 480), f=560.0,
+                                  altitude=40.0)
+        p_ = PhotoParams(images=sc["paths"], out_dir=os.path.join(tmp, "sfm_out"), max_dim=640, n_features=4000,
+                         focal_px=560.0, georef="level", dense=True, dense_scale=1.0, dense_step=2, workers=2)
+        logs = []
+        try:
+            r = run_photogrammetry(p_, log=logs.append)
+        except Exception as e:                       # keep the pipeline log in the report for diagnosis
+            raise RuntimeError(f"{type(e).__name__}: {e}\n  log:\n    " + "\n    ".join(logs[-25:])) from e
+        rec = r["rec"]
+        assert rec.registered.all(), f"{rec.registered.sum()}/6 images oriented"
+        C = rec.centres()
+        s_, R_, t_ = umeyama(C, sc["centres"])
+        cam_err = float(np.max(np.linalg.norm(s_ * C @ R_.T + t_ - sc["centres"], axis=1)))
+        from fileio.las_reader import read_las
+        d = read_las(r["dense_path"])
+        X = s_ * d.xyz @ R_.T + t_
+        dz = np.abs(X[:, 2] - sc["truth"](X[:, 0], X[:, 1]))
+        assert cam_err < 0.2 and np.median(dz) < 0.15, (cam_err, float(np.median(dz)))
+        rig = synthetic.make_stereo_scene(os.path.join(tmp, "rig"), n=1, size=(640, 480), f=560.0)
+        from core.sfm.pipeline import RigParams, run_stereo_rig
+        rr = run_stereo_rig(RigParams(left=rig["left"], right=rig["right"], out_dir=os.path.join(tmp, "rig_out"),
+                                      f_px=560.0, baseline_m=rig["baseline"], orientation="camera", max_dim=640),
+                            log=lambda s: None)
+        dy = np.abs(rr["xyz"][:, 2] - rig["surface"](rr["xyz"][:, 0], 1.5 - rr["xyz"][:, 1]))
+        assert np.median(dy) < 0.15, float(np.median(dy))
+        return (f"6 photos: cameras ±{cam_err * 100:.1f} cm, dense {len(d):,} pts, median |Δz| "
+                f"{np.median(dz) * 100:.1f} cm · stereo rig median {np.median(dy) * 100:.1f} cm")
+
     for name, fn in (("generate LAZ (laspy + lazrs)", make_data), ("read LAZ", read_laz),
                      ("text export / import", text_roundtrip), ("TIN (Delaunay)", tin), ("DEM (TIN, shoal)", dem),
                      ("GeoTIFF with CRS", geotiff), ("LandXML", landxml), ("LAS export", las_with_crs),
@@ -581,6 +645,8 @@ def run(app=None):
                      ("vector formats (SHP/GPKG/GeoJSON/KML/DXF)", vector_formats),
                      ("land: terrain / change / stockpile / road / hydro / clearance", land_analyses),
                      ("multi-year cable assessment", multiyear_check),
+                     ("meshes / models (planes, piles, LOD2)", meshes_and_models),
+                     ("photogrammetry SfM-MVS / stereo rig (OpenCV)", photogrammetry),
                      ("project save / open", project_roundtrip), ("3D render (VisPy/OpenGL)", render)):
         step(name, fn)
 

@@ -26,7 +26,8 @@ def _have(pkg):
         return False
 
 
-_missing_optional = [p for p in ("lazrs", "pyproj", "rasterio", "shapefile", "contourpy", "openpyxl") if not _have(p)]
+_missing_optional = [p for p in ("lazrs", "pyproj", "rasterio", "shapefile", "contourpy", "openpyxl", "cv2")
+                     if not _have(p)]
 if _missing_optional:
     print("*** NOTE: optional packages not installed, related features will be unavailable:",
           ", ".join(_missing_optional))
@@ -50,6 +51,22 @@ datas += _safe(collect_data_files, "pyproj")       # proj.db (EPSG definitions)
 datas += _safe(collect_data_files, "rasterio")     # bundled GDAL / PROJ data
 
 binaries = _safe(collect_dynamic_libs, "lazrs")    # LAZ codec (Rust extension)
+binaries += _safe(collect_dynamic_libs, "cv2")     # OpenCV (photogrammetry) — use opencv-python-HEADLESS:
+                                                   # the GUI wheel ships its own Qt, which clashes with PySide6
+datas += _safe(collect_data_files, "cv2")
+try:
+    import importlib.metadata as _md0
+    if _md0.version("opencv-python"):
+        print("*** WARNING: opencv-python (with its own Qt) is installed — uninstall it and keep "
+              "opencv-python-headless, or the app may fail to start")
+except Exception:
+    pass
+# Open3D (Poisson / ball-pivoting meshes) is large and needs many data files: only bundled on request
+# (set INCLUDE_OPEN3D=1). Without it the frozen app offers the 2.5D Delaunay and 3D alpha-shape meshes.
+_with_o3d = bool(os.environ.get("INCLUDE_OPEN3D")) and _have("open3d")
+if _with_o3d:
+    datas += collect_data_files("open3d")
+    binaries += collect_dynamic_libs("open3d")
 
 # Qt's software OpenGL renderer (Mesa llvmpipe) — used by the automatic fallback / --software-gl
 # when a graphics driver cannot provide OpenGL 2.1 (old drivers, remote desktop, VMs).
@@ -70,17 +87,22 @@ hiddenimports = (
        "contourpy",
        "PySide6.QtTest",            # required by VisPy's PySide6 backend — do not exclude
        "lazrs", "laspy.compression", "pyproj.database", "scipy.spatial._qhull",
-       "scipy.ndimage", "PySide6.QtOpenGL", "PySide6.QtOpenGLWidgets", "PySide6.QtSvg"]
+       "scipy.ndimage", "PySide6.QtOpenGL", "PySide6.QtOpenGLWidgets", "PySide6.QtSvg",
+       "scipy.sparse.csgraph", "scipy.optimize._lsq"]
+    + (["cv2"] if _have("cv2") else [])
+    + (collect_submodules("open3d") if _with_o3d else [])
 )
 
 # Optional packages VisPy / pandas may pick up if they are installed — not used by the app.
 excludes = ["tkinter", "matplotlib", "PyQt5", "PyQt6", "PySide2", "IPython", "jupyter", "notebook", "pytest",
-            "cv2", "imageio", "imageio_ffmpeg", "skimage", "PIL", "sklearn", "numba", "llvmlite",
+            "imageio", "imageio_ffmpeg", "skimage", "PIL", "sklearn", "numba", "llvmlite",
             "sympy", "networkx", "dask", "pyarrow", "tables", "h5py", "sqlalchemy",
             "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebChannel",
             "PySide6.Qt3DCore", "PySide6.QtMultimedia", "PySide6.QtQuick", "PySide6.QtQuickWidgets",
             "PySide6.QtQml", "PySide6.QtCharts", "PySide6.QtPdf", "PySide6.QtNetwork",
             "PySide6.QtDesigner", "PySide6.QtHelp", "PySide6.QtSql", "PySide6.QtXml"]
+if not _with_o3d:
+    excludes += ["open3d", "dash", "plotly"]
 
 a = Analysis(
     ["main.py"],

@@ -1,4 +1,4 @@
-# PointCloud Studio 使用說明（v0.1.12）
+# PointCloud Studio 使用說明（v0.1.23）
 
 點雲檢視、清理與地形建模工具（英文暗色介面），適用於 MBES／LiDAR 測量資料與海纜工程。
 製作者：Mingyi Hsu（smingyi.hsu@gmail.com）
@@ -402,7 +402,56 @@ Cable & Foundations → **Import Structures…** 匯入風機、變電站或樁�
 View → Distance Label 可選 **KP**（海纜、海上管線）或 **Chainage**（道路、陸上管線）；套用於剖面橫軸、游標、
 3D 路由標示、Subset 狀態與開溝體積表（設定會記住）。
 
+## 圖層順序（Data 面板）
+- 按住圖層左側的 **⠿** 拖曳到想要的位置（藍線表示放下的位置）；或用右側的 **▲ ▼** 上下移動，⋯ 選單另有「Move to top／Move to bottom」。順序會存進專案。
+- 勾選 **Draw in layer order（預設開啟）** 時，列表中越上面的圖層畫在越前面（點雲、TIN、DEM、網格皆適用），
+  重疊時上層蓋住下層，即使下層在 3D 中比較靠近視點；同一圖層內仍依正常 3D 深度。取消勾選則完全依 3D 深度顯示。
+- 鎖定編輯時，斷面剖面使用「最上面的可見點雲」，因此調整順序也會改變剖面所用的點雲（剖面會自動重算）。
+
+## 重建（Reconstruct 選單）：攝影測量、網格與模型化
+
+### Photos / Video → Point Cloud（Ctrl+Shift+P）
+以傳統 SfM-MVS（不使用 AI 模型）從照片或影片產生彩色點雲：特徵擷取（RootSIFT）→ 配對與幾何驗證（MAGSAC）→
+增量式定向（PnP、三角化）→ 光束法平差（自率定焦距與徑向畸變 k1、k2）→ 定位 → 密集匹配（SGBM＋左右一致性檢查）→ 多視角融合。
+
+- **拍攝建議**：前後重疊 ≥ 60 %（空拍建議 70–80 % / 側向 60 %）、紋理清楚、避免同一點原地旋轉；水面、玻璃、純白牆不易匹配。
+- **影片**：每個時間間隔取最清晰的一幀（自動避開動態模糊）；配對預設為「Sequential」。
+- **焦距**：預設讀 EXIF（35 mm 等效焦距並作為平差先驗）。**正射空拍＋起伏小的地形時，焦距與航高無法分辨**，
+  若照片沒有 EXIF，請手動輸入焦距（mm＋感光元件寬度，或像素）。
+- **品質**：Low／Medium／High／Ultra 決定工作影像大小與特徵數；Density 決定密集點雲間距；
+  「Keep where seen by ≥ n pairs」為雜訊濾除（點需由 n 組影像對共同支持）。
+- **定位（Georeferencing）**：
+  - *Camera GPS*：用 EXIF GPS 做相似轉換（需選輸出 EPSG）；消費級 GPS 精度約公尺級，航線成一直線時旋轉不穩定（會提示）。
+  - *Ground control points*：載入控制點座標 CSV（名稱, X, Y, Z），按 **Mark GCPs in Photos…** 在每張可見的照片點選中心
+    （滾輪縮放、拖曳平移；每點 ≥ 2 張、至少 3 點），標記可存成 CSV 下次再載入；可指定部分點為檢核點（Check points）。
+  - *Level only*：沒有定位資料時只做水平化（空拍 nadir 或地面手持 upright），座標為區域座標、**沒有比例**。
+- **輸出**（Output 資料夾）：`*_dense.las`（RGB、views 欄位）、`*_sparse.las`、`*_cameras.csv`（X Y Z ω φ κ、f、k1、k2）、
+  `*_report.json`（定向張數、重投影誤差、定位殘差）；結果自動加入專案，相機位置為向量圖層。
+
+### Stereo Rig → Point Cloud（雙目相機）
+- 輸入：左右兩個資料夾、左右並排照片、左右兩支影片或左右並排影片（左右檔案依檔名排序對應）。
+- 校正：手動（焦距、主點、基線，適用已校正的雙目相機）、校正檔（本程式的 JSON 或 OpenCV YAML / XML：K1 D1 K2 D2 R T），
+  或棋盤格照片（輸入內角點數與方格尺寸，校正結果存成 JSON）。
+- 深度直接由基線換算，為公制；多組影像以左影像做 SfM 串接，尺度由基線決定。方向可選「水平前視」「向下」「相機座標」。
+
+### Mesh from Point Cloud（Ctrl+Shift+M，任何點雲皆可）
+- **2.5D Delaunay**：地形、海床（每個平面位置一個高度），可設最大邊長與抽稀。
+- **3D alpha shape**：物件、結構物、料堆；預設自動半徑並填實內部空腔，得到封閉外表面（可算體積）。
+- **Poisson／Ball pivoting**：需安裝 Open3D（可由程式的相依套件視窗安裝；打包版預設不含）。
+- 後處理：Taubin 平滑、刪除小碎片、簡化（體素合併）、沿用點雲顏色。
+- 匯出：Data 面板 ⋯ → Export… 或 Reconstruct → Export Mesh / Model…：OBJ（含頂點顏色）、PLY、STL、DXF 3DFACE；
+  座標很大時可選擇以區域原點輸出（位移量寫在檔頭）。
+
+### 點雲模型化（Model Planes／Cylinders／Buildings）
+先選取（或用分類篩選）要建模的點，結果與速度都較好。
+- **Planes**：牆、屋頂、樓板、岩坡、護岸 — 法向量、傾角／傾向、面積、RMS，可限定水平／垂直／傾斜。
+- **Cylinders**：基樁、單樁、桿柱、柱、管線、樹幹 — 半徑、長度、軸向、傾斜角、RMS；垂直模式或任意方向。
+- **Buildings**：需先分類（Edit → Classify Points：地面 2、建物 6）— 建物輪廓、地面／簷口／屋頂高程、高度、體積；
+  LOD1 為單一屋頂高度的方塊，LOD2 依屋頂平面建立屋頂形狀；輪廓另存為多邊形圖層。
+- 結果為 MSH 資料：Data 面板 ⋯ → **Mesh / model information…** 顯示參數表（雙擊列縮放到該模型，可匯出 CSV）。
+
 ## 版本紀錄
+- **0.1.23**：圖層可上下移動並依順序顯示；修正開關圖層、切換編輯對象時斷面／自動濾波／Subset 使用錯誤點雲的問題；Reconstruct 選單 — 照片／影片攝影測量（SfM-MVS、自率定、SGBM 密集匹配、GPS／GCP／水平化定位）、雙目相機；任何點雲的網格化（2.5D Delaunay、3D alpha shape、Poisson／Ball pivoting）與 OBJ／PLY／STL／DXF 匯出；點雲模型化（平面、圓柱、建物 LOD1／LOD2）
 - **0.1.22**：多年度評估新增批次（多條海纜、依串接欄位串成整串）與輸出（Excel 多分頁、每條海纜 5 張圖）、年份範圍
 - **0.1.21**：修正水深顯示時剖面圖把海床畫在纜線下方的問題——水深軸改為向下增加，海床／地表一律在纜線或管線上方；
   圖表上下留白、圖例移到圖框上方（自動換行、每項只列一次）、參考線標籤改到右側並加底色，避免重疊

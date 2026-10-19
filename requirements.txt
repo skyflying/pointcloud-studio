@@ -9,3 +9,6 @@ pyproj>=3.4        # coordinate systems (EPSG) for LAS / GeoTIFF export
 pyshp>=2.3          # Shapefile routes
 contourpy>=1.0      # contour lines
 openpyxl>=3.1            # Excel workbook export (optional)
+opencv-python-headless>=4.8   # photogrammetry: SfM-MVS from photos / video, stereo rigs (optional)
+# open3d (optional, Poisson / ball-pivoting meshes) is not listed: no wheels for every Python —
+# install it separately (pip install open3d) or from the app's dependency dialog

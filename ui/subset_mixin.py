@@ -183,6 +183,11 @@ class SubsetMixin:
     def subset_select(self, idx, op):
         if self.pc is None:
             return
+        idx = np.asarray(idx, dtype=np.int64)
+        if len(idx) and (int(idx.max()) >= len(self.pc) or int(idx.min()) < 0):
+            # the panel still shows another cloud (edit target switched): redraw it, select nothing
+            self.refresh_subset()
+            return
         self.sel.apply(idx, op)
         self._track_method("Subset", op)
         self._selection_changed()
@@ -293,8 +298,9 @@ class FilterMixin:
         self.filter_dialog.set_context(dict(all=len(act), selected=self.sel.count, subset=n_sub), surfaces,
                                        self.subset is not None, self.depth_mode, mean_spacing(pc.xyz, act),
                                        (float(lo[2]), float(hi[2])), scope)
-        if self._filter_saved is None:
-            self._filter_saved = self.sel.mask.copy()
+        if self._filter_saved is None or getattr(self, "_filter_saved_pc", None) is not pc:
+            self._filter_saved = self.sel.mask.copy()        # selection to restore on Cancel — of THIS cloud
+            self._filter_saved_pc = pc
         self.filter_dialog.show()
         self.filter_dialog.raise_()
         self.filter_dialog.activateWindow()
@@ -318,7 +324,10 @@ class FilterMixin:
             ds = self.project.get(params.pop("surface_id", None))
             surface = ds.obj if ds is not None else None
         idx = self._filter_scope(scope)
-        self._filter_ctx = (method, op, len(idx))
+        if getattr(self, "_filter_saved_pc", None) is not self.pc:      # edit target switched meanwhile
+            self._filter_saved = self.sel.mask.copy()
+            self._filter_saved_pc = self.pc
+        self._filter_ctx = (method, op, len(idx), self.pc)
         self._run_task("Running filter…", filters.run, (self.pc.xyz, idx, method, params),
                        dict(surface=surface), self._on_filter_done, report_progress=True)
 
@@ -326,7 +335,10 @@ class FilterMixin:
         from core.filters import METHODS
         self._close_progress()
         cand, info = result
-        method, op, n_scope = self._filter_ctx
+        method, op, n_scope, run_pc = self._filter_ctx
+        if run_pc is not self.pc or self.pc is None:      # result belongs to another cloud: drop it
+            self.statusBar().showMessage("The edit target changed while the filter ran — run it again", 8000)
+            return
         base = self._filter_saved if (op == "add" and self._filter_saved is not None) else None
         mask = base.copy() if base is not None else np.zeros(len(self.pc), dtype=bool)
         mask[cand] = True
@@ -337,6 +349,8 @@ class FilterMixin:
         self.filter_dialog.show_result(len(cand), n_scope, info.get("threshold", ""))
 
     def filter_finish(self, keep):
+        if getattr(self, "_filter_saved_pc", None) is not self.pc:
+            self._filter_saved = None                     # saved selection belongs to another cloud
         if not keep and self._filter_saved is not None and self.pc is not None:
             self.sel.mask = self._filter_saved & self.pc.active_mask()
             self._sel_methods = []

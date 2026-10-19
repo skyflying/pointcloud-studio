@@ -16,7 +16,7 @@ from core.surface import Dem, Tin
 from core.trash import Batch
 
 FORMAT = "PointCloud Studio project"
-FORMAT_VERSION = 2          # 2: structures datasets (0.1.15); files without them are still written as 1
+FORMAT_VERSION = 3          # 2: structures datasets (0.1.15); 3: meshes / models (0.1.23); older content is still written as 1 or 2
 
 
 def data_dir(path):
@@ -112,6 +112,13 @@ def save_project(path, project, sections=(), view=None, subsets=None):
                                  "crange": [float(v) for v in o.crange] if o.crange else None,
                                  "cpalette": o.cpalette,
                                  "meta": {k: v for k, v in o.meta.items() if isinstance(v, (int, float, str, bool))}}
+            elif o.__class__.__name__ == "Mesh":
+                arrays = {"vertices": o.vertices, "faces": o.faces}
+                if o.colors is not None:
+                    arrays["colors"] = o.colors
+                np.savez_compressed(fpath, **arrays)
+                entry["mesh"] = {"meta": {k: v for k, v in o.meta.items()
+                                          if isinstance(v, (int, float, str, bool, list, dict)) or v is None}}
             elif isinstance(o, Tin):
                 np.savez_compressed(fpath, vertices=o.vertices, triangles=o.triangles)
                 entry["tin"] = {"max_edge": o.max_edge, "source_count": o.source_count, "thin_cell": o.thin_cell}
@@ -127,7 +134,8 @@ def save_project(path, project, sections=(), view=None, subsets=None):
                 pass
     # version 1 readers (≤ 0.1.14) cannot handle structure datasets → mark such files as version 2 so an
     # older program reports "saved by a newer version" instead of failing
-    fv = 2 if any(d.kind in ("structure", "vector") for d in project.datasets) else 1
+    fv = (3 if any(d.kind == "mesh" for d in project.datasets) else
+          2 if any(d.kind in ("structure", "vector") for d in project.datasets) else 1)
     doc = {"format": FORMAT, "format_version": fv, "saved": datetime.now().isoformat(timespec="seconds"),
            "crs": crsmod.to_text(project.crs),
            "origin": None if project.origin is None else [float(v) for v in project.origin],
@@ -172,6 +180,10 @@ def load_generated(entry, project_path):
             lines = np.split(z["xyz"], np.cumsum(z["lens"])[:-1])
             return ContourSet(list(lines), z["levels"], z["major"].astype(bool), c["interval"], c["base"],
                               c["index_every"], meta=c.get("meta", {}))
+        if "mesh" in entry:
+            from core.mesh import Mesh
+            return Mesh(z["vertices"], z["faces"], z["colors"] if "colors" in z else None,
+                        dict(entry["mesh"].get("meta") or {}))
         if "grid" in entry:
             g = entry["grid"]
             return Dem(z["z"], g["x0"], g["ytop"], g["cell"], g["method"], meta=dict(g.get("meta", {})),

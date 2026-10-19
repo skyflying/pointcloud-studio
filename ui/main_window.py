@@ -40,6 +40,7 @@ from ui.cable_mixin import CableMixin
 from ui.seabed_mixin import SeabedMixin
 from ui.land_mixin import LandMixin
 from ui.multiyear_ui import MultiYearMixin
+from ui.reconstruct_mixin import ReconstructMixin
 from ui.subset_mixin import ClassifyMixin, FilterMixin, RouteMixin, SubsetMixin
 from ui.export_dialog import ExportDialog
 from ui.import_dialog import XyzImportDialog
@@ -86,7 +87,7 @@ class _Worker(QObject):
 
 
 class EmptyState(QWidget):
-    def __init__(self, on_open):
+    def __init__(self, on_open, on_photo=None):
         super().__init__()
         self.setObjectName("emptyState")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -112,11 +113,17 @@ class EmptyState(QWidget):
         v.addWidget(btn, 0, Qt.AlignCenter)
         v.addSpacing(6)
         v.addWidget(_muted("Ctrl+O"), 0, Qt.AlignCenter)
+        if on_photo is not None:
+            v.addSpacing(14)
+            b2 = QPushButton("  Photos / Video → Point Cloud…")
+            b2.setFixedWidth(250)
+            b2.clicked.connect(on_photo)
+            v.addWidget(b2, 0, Qt.AlignCenter)
         v.addStretch(4)
 
 
 # ---------------------------------------------------------------- main window
-class MainWindow(MultiYearMixin, LandMixin, SeabedMixin, CableMixin, ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteMixin, FilterMixin, SubsetMixin, ProjectFileMixin, ProjectMixin, QMainWindow):
+class MainWindow(ReconstructMixin, MultiYearMixin, LandMixin, SeabedMixin, CableMixin, ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteMixin, FilterMixin, SubsetMixin, ProjectFileMixin, ProjectMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
@@ -139,6 +146,7 @@ class MainWindow(MultiYearMixin, LandMixin, SeabedMixin, CableMixin, ClassifyMix
         self._init_seabed_state()
         self._init_land_state()
         self._init_multiyear_state()
+        self._init_reconstruct_state()
         self.region_visible = self.subset_visible = self.reviewed_visible = True
         self._filter_saved = None
         self.sections = []
@@ -159,7 +167,7 @@ class MainWindow(MultiYearMixin, LandMixin, SeabedMixin, CableMixin, ClassifyMix
         self.selector.on_subset_draft = self._on_subset_draft
         self.selector.on_subset_finish = self._on_subset_finish
         self.stack = QStackedWidget()
-        self.stack.addWidget(EmptyState(self.open_file))
+        self.stack.addWidget(EmptyState(self.open_file, self.open_photo_dialog))
         self.stack.addWidget(self.viewer.widget)
         self.setCentralWidget(self.stack)
 
@@ -268,6 +276,17 @@ class MainWindow(MultiYearMixin, LandMixin, SeabedMixin, CableMixin, ClassifyMix
         self.act_dem = QAction("Create DEM…", self, shortcut="Ctrl+G", triggered=self.create_dem)
         self.act_exp_tin = QAction(icon("export"), "Export TIN…", self, triggered=self.export_tin)
         self.act_exp_dem = QAction(icon("export"), "Export DEM…", self, triggered=self.export_dem)
+        self.act_photo = QAction("Photos / Video → Point Cloud (SfM-MVS)…", self, shortcut="Ctrl+Shift+P",
+                                 triggered=self.open_photo_dialog)
+        self.act_photo.setToolTip("Classic structure from motion + multi-view stereo from photos or a video")
+        self.act_rig = QAction("Stereo Rig → Point Cloud…", self, triggered=self.open_rig_dialog)
+        self.act_mesh = QAction("Mesh from Point Cloud…", self, shortcut="Ctrl+Shift+M", triggered=self.open_mesh_dialog)
+        self.act_model_planes = QAction("Model Planes…", self, triggered=lambda: self.open_model_dialog("planes"))
+        self.act_model_cyl = QAction("Model Cylinders (Piles, Poles, Pipes)…", self,
+                                     triggered=lambda: self.open_model_dialog("cylinders"))
+        self.act_model_bld = QAction("Model Buildings (LOD1 / LOD2)…", self,
+                                     triggered=lambda: self.open_model_dialog("buildings"))
+        self.act_exp_mesh = QAction(icon("export"), "Export Mesh / Model…", self, triggered=lambda: self.export_mesh())
 
         m_file = self.menuBar().addMenu("&File")
         m_file.addAction(self.act_open)
@@ -307,6 +326,17 @@ class MainWindow(MultiYearMixin, LandMixin, SeabedMixin, CableMixin, ClassifyMix
             m_surf.addAction(a)
         m_view.addSeparator()
         self._m_view = m_view
+        m_rec = self.menuBar().addMenu("&Reconstruct")
+        m_rec.addAction(self.act_photo)
+        m_rec.addAction(self.act_rig)
+        m_rec.addSeparator()
+        m_rec.addAction(self.act_mesh)
+        m_rec.addSeparator()
+        for a in (self.act_model_planes, self.act_model_cyl, self.act_model_bld):
+            m_rec.addAction(a)
+        m_rec.addSeparator()
+        m_rec.addAction(self.act_exp_mesh)
+        self._m_rec = m_rec
         m_an = self.menuBar().addMenu("&Analysis")
         m_an.addAction(self.act_volume)
         m_an.addAction(self.act_c2s)
@@ -953,8 +983,8 @@ class MainWindow(MultiYearMixin, LandMixin, SeabedMixin, CableMixin, ClassifyMix
         vis = self.project.of_kind("points", visible_only=True)
         return vis[0].obj if vis else None
 
-    def _section_colors(self, idx):
-        pc = self._profile_cloud()
+    def _section_colors(self, idx, pc=None):
+        pc = self._profile_cloud() if pc is None else pc
         mode = self.viewer.color_mode if pc is self.pc else "elevation"
         if mode in SCALAR_MODES and self.viewer.scales[mode].vmin is not None:
             return map_scalar(scalar_values(pc, idx, mode), self.viewer.scales[mode])
@@ -971,10 +1001,11 @@ class MainWindow(MultiYearMixin, LandMixin, SeabedMixin, CableMixin, ClassifyMix
             pc = PointCloud(np.array([[sec.xy[0, 0], sec.xy[0, 1], 0.0]]))
             pc.deleted_batch[:] = -1
         prof.compute(sec, pc, None, None)          # surfaces + other clouds come as coloured layers
+        sec.result["pc"] = pc                      # the indices below refer to THIS cloud
         sec.result["layers"] = self._profile_layers(sec, pc)
         self.profile.set_sections([sc.name for sc in self.sections], self.active_section)
         depth = self.depth_mode and self.viewer.scale_mode in (None, "elevation")
-        self.profile.show_section(sec, self._section_colors(sec.result["idx"]), depth, fit,
+        self.profile.show_section(sec, self._section_colors(sec.result["idx"], pc), depth, fit,
                                   sec.result.get("layers", []))
         self._overlay_sections()
 
@@ -983,8 +1014,16 @@ class MainWindow(MultiYearMixin, LandMixin, SeabedMixin, CableMixin, ClassifyMix
             return
         sec = self.sections[self.active_section]
         if sec.result:
+            pc = sec.result.get("pc")
+            cur = self._profile_cloud()
+            idx = sec.result["idx"]
+            # the cloud shown in the profile changed (layer hidden / shown, edit target switched, project
+            # reloaded): the stored indices belong to another cloud — compute the section again
+            if pc is None or (cur is not None and pc is not cur) or (len(idx) and int(idx.max()) >= len(pc.xyz)):
+                self._recompute_section()
+                return
             depth = self.depth_mode and self.viewer.scale_mode in (None, "elevation")
-            self.profile.show_section(sec, self._section_colors(sec.result["idx"]), depth, False,
+            self.profile.show_section(sec, self._section_colors(idx, pc), depth, False,
                                       sec.result.get("layers", []))
 
     # ProfilePanel callbacks
@@ -1028,7 +1067,7 @@ class MainWindow(MultiYearMixin, LandMixin, SeabedMixin, CableMixin, ClassifyMix
         r = sec.result
         rows = []
         if len(r["idx"]):
-            xy = self._profile_cloud().xyz[r["idx"], :2]
+            xy = (r["pc"] if r.get("pc") is not None else self._profile_cloud()).xyz[r["idx"], :2]
             rows.append(np.column_stack([np.zeros(len(xy)), sec.disp(r["chainage"]), xy, r["z"], r["offset"],
                                          r["idx"]]))
         names = ["point"]

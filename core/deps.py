@@ -34,6 +34,8 @@ PACKAGES = [
     ("shapefile", "pyshp>=2.3", False, "Shapefile routes, polygons and contours"),
     ("contourpy", "contourpy>=1.0", False, "contour lines"),
     ("openpyxl", "openpyxl>=3.1", False, "Excel workbook export"),
+    ("cv2", "opencv-python-headless>=4.8", False, "photogrammetry (SfM-MVS from photos / video, stereo rigs)"),
+    ("open3d", "open3d>=0.17", False, "Poisson and ball-pivoting meshes (other mesh methods work without it)"),
 ]
 BUILD_PACKAGES = [("PyInstaller", "pyinstaller", True, "building the app")]
 
@@ -52,12 +54,19 @@ def _probe(module):
         return False
 
 
+# Optional packages that are NOT offered at start-up (large, not available for every Python / Mac):
+# installed on demand from the message shown when their feature is used.
+ON_DEMAND = {"open3d"}
+
+
 def quick_missing(include_optional=True):
     """Fast check for start-up (no sub-process): packages that are not installed at all."""
     import importlib.util
     out = []
     for p in PACKAGES:
         if not include_optional and not p[2]:
+            continue
+        if p[0] in ON_DEMAND:
             continue
         try:
             found = importlib.util.find_spec(p[0]) is not None
@@ -119,7 +128,7 @@ def requirements_mismatch(path=None):
 def missing(include_optional=True, build=False):
     """[(module, requirement, required, purpose)] of packages that cannot be imported."""
     pkgs = PACKAGES + (BUILD_PACKAGES if build else [])
-    return [p for p in pkgs if (include_optional or p[2]) and not _probe(p[0])]
+    return [p for p in pkgs if (include_optional or p[2]) and p[0] not in ON_DEMAND and not _probe(p[0])]
 
 
 def python_ok():

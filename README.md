@@ -5,7 +5,7 @@ A desktop application for viewing, cleaning, and analysing point cloud data from
 <!-- Replace with a real screenshot: save it as docs/screenshot.png -->
 ![PointCloud Studio screenshot](https://raw.githubusercontent.com/skyflying/pointcloud-studio/refs/heads/main/blob/screenshot.png)
 
-**Current version: 0.1.22** · [Releases](../../releases) · [使用說明（繁體中文）](docs/USER_GUIDE.zh-TW.md)
+**Current version: 0.1.23** · [Releases](../../releases) · [使用說明（繁體中文）](docs/USER_GUIDE.zh-TW.md)
 
 ---
 
@@ -75,6 +75,16 @@ A desktop application for viewing, cleaning, and analysing point cloud data from
 - **Sand wave migration**: bedforms separated from the regional seabed; displacement per window by 2D surface matching (speed and direction, crest-normal for long-crested bedforms) or along the route profile; crest tracking; burial forecast for a cable profile (bedform pattern moved at the observed along-route rate) with years to exposure and exposure-risk segments — a linear extrapolation for planning
 - Results: summary, KP chart, segment and KP-bin tables (double-click → go to the location), coloured segments in 3D, export to CSV (summary / segments / KP bins / stations), Shapefile (PolyLineZ segments) and PNG
 
+**Reconstruct** (photogrammetry, meshes and models)
+- **Photos / video → point cloud** (Ctrl+Shift+P): classic structure from motion + multi-view stereo, no learned models. RootSIFT features, mutual ratio-test matching verified with MAGSAC, incremental reconstruction (PnP registration, triangulation) and bundle adjustment with self-calibration of focal length and radial distortion (k1, k2); EXIF focal length used as a prior. Video: one frame per interval, the sharpest of each interval. Image pairs: all, sequential (video, strips) or nearest by GPS
+- **Dense matching**: rectified image pairs → semi-global matching (SGBM) with a left–right consistency check → multi-view voxel fusion (a point is kept only where several pairs agree); RGB and the number of supporting pairs (`views`) per point
+- **Georeferencing**: camera GPS from EXIF (robust similarity, residuals per image), **ground control points** marked in the photos (control and check points with RMSE), or levelling only (aerial nadir / handheld upright) for local models; output CRS by EPSG
+- **Stereo rig → point cloud**: two folders, side-by-side photos, two videos or a side-by-side video; calibration manual (focal, principal point, baseline), from a file (JSON, OpenCV YAML / XML) or from chessboard pairs; metric depth from the baseline, several pairs tied together by SfM on the left images
+- Results: dense LAS (+ optional sparse tie points), camera positions as a vector layer, cameras CSV (X Y Z ω φ κ, f, k1, k2), JSON report
+- **Mesh from any point cloud** (Ctrl+Shift+M): 2.5D Delaunay (terrain, seabed), 3D alpha shape with cavity filling (closed surfaces of objects, structures, stockpiles), Poisson and ball pivoting (with the optional Open3D); smoothing (Taubin), small-piece removal, simplification, point colours; area and enclosed volume; export **OBJ** (vertex colours), **PLY**, **STL**, **DXF** 3DFACE (optional local origin)
+- **Modelling** — fitted models with a parameter table (CSV) and a mesh: **planes** (walls, roofs, slabs, rock faces, revetments: normal, dip / dip direction, area, RMS), **cylinders** (piles, monopiles, poles, columns, pipes: radius, length, axis, tilt, RMS), **buildings** from classified points (footprint polygon, ground / eave / top level, LOD1 block or LOD2 roof shape from roof planes, height, volume)
+- Meshes and models are project datasets (MSH): shown with their colours, opacity, wireframe, saved in the project
+
 **Interface**
 - English UI with a dark, modern theme
 - Start-up log, diagnostics (`--diagnose`) and a built-in self-test (`--selftest`)
@@ -93,6 +103,9 @@ A desktop application for viewing, cleaning, and analysing point cloud data from
 | Routes: RPL CSV / TXT, Shapefile | ✓ | |
 | Contours: Shapefile PolyLineZ, DXF 3D polylines with depth / elevation labels | | ✓ |
 | Sections: CSV, PNG · Reports: CSV | | ✓ |
+| Photos (JPEG, PNG, TIFF, BMP, WebP with EXIF) and video (MP4, MOV, AVI, MKV, …) for photogrammetry | ✓ | |
+| Meshes / models: OBJ (vertex colours), PLY, STL, DXF 3DFACE · model tables CSV | | ✓ |
+| Stereo calibration: JSON, OpenCV YAML / XML · GCP coordinates and image marks: CSV | ✓ | ✓ |
 
 ---
 
@@ -180,7 +193,9 @@ pointcloud-studio/
 ├── check_env.bat            # Environment / DLL diagnostics
 ├── core/                    # Data model and algorithms (point cloud, project, CRS, surfaces,
 │                            #   filters, sections, routes, volumes, earthworks, contours, cable analyses,
-│                            #   self-test)
+│                            #   meshes (mesh.py), geometric models (modeling.py), self-test)
+│   └── sfm/                 # Photogrammetry: images / EXIF / video, features, incremental SfM + bundle
+│                            #   adjustment, georeferencing, dense SGBM + fusion, stereo rig, synthetic test scene
 ├── fileio/                  # Readers / writers (XYZ, LAS/LAZ, grids, routes, surfaces, contours)
 ├── render/                  # 3D view (VisPy), colour maps, colour bar, picking, interaction
 ├── ui/                      # Main window and dialogs (PySide6)
@@ -199,6 +214,18 @@ pointcloud-studio/
 ## Version history
 
 ### Releases
+
+#### 0.1.23
+- **Added** — Reconstruct menu: photogrammetry from photos or video (SfM-MVS: features, matching, incremental reconstruction, bundle adjustment with self-calibration, dense SGBM matching with multi-view fusion), georeferencing by camera GPS, ground control points (marking dialog, check points) or levelling; stereo camera rigs (manual / file / chessboard calibration, metric scale from the baseline, several pairs tied by SfM).
+- **Added** — Meshes from any point cloud (2.5D Delaunay, 3D alpha shape, Poisson / ball pivoting with Open3D), post-processing and export (OBJ, PLY, STL, DXF).
+- **Added** — Point cloud modelling: planes, cylinders (piles, poles, pipes) and buildings (LOD1 / LOD2 with footprints), with parameter tables.
+- **Added** — Mesh datasets (MSH) in the project, 3D view (vertex colours, two-sided lighting) and project files (format version 3). OpenCV (`opencv-python-headless`) added as an optional module and bundled in the built app; Open3D optional and installed on demand — not offered at start-up, only detected (not imported) until a Poisson / ball-pivoting mesh is built, and bundled only with `INCLUDE_OPEN3D=1`.
+- **Added** — Self-test: meshes / models and a synthetic photogrammetry + stereo-rig run checked against the known geometry.
+- **Added** — Layer order: drag a layer by its grip ⠿ in the Data panel (a line shows where it will go), or use ▲ / ▼ and Move to top / bottom in its ⋯ menu. With "Draw in layer order" (default on) a layer higher in the list is drawn in front of the layers below it — point clouds, TINs, DEMs and meshes — while each layer keeps normal 3D depth inside itself; off = plain 3D depth. The order is saved in the project.
+- **Fixed** — Auto filter: switching the edit target while the filter window was open made Cancel (restore selection) fail with a size mismatch, and a finished filter could apply its result to the other cloud; the saved selection and the result now belong to the cloud they were made for.
+- **Fixed** — Subset editor: a selection made in a panel that still showed the previous edit target could select wrong points (or raise `IndexError`); such indices are now rejected and the panel is redrawn.
+- **Fixed** — Dense matching could fail with "Dense matching produced no points" (seen in the Windows self-test): the rectified image pairs were cropped and zoomed (up to ×50 for converging pairs), so disparities exceeded the image width and every pair was skipped. Rectification now keeps the original focal length, partners are chosen by their expected overlap, spare partners are tried when too few pairs match, and the error lists the pair messages.
+- **Fixed** — Showing / hiding a point cloud layer while a section profile was open could raise `IndexError` in the profile colours: the section indices belonged to another cloud (the profile follows the first visible cloud when editing is locked). The profile now remembers its cloud and is recomputed when that changes.
 
 #### 0.1.22
 - **Added** — Multi-year assessment, batch: several cables at once, cable strings joined from a string attribute (nearest-endpoint stitching), batch summary with per-item detail on double-click, year range.
