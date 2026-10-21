@@ -297,7 +297,9 @@ class FilterMixin:
         lo, hi = pc.bbox_min, pc.bbox_max
         self.filter_dialog.set_context(dict(all=len(act), selected=self.sel.count, subset=n_sub), surfaces,
                                        self.subset is not None, self.depth_mode, mean_spacing(pc.xyz, act),
-                                       (float(lo[2]), float(hi[2])), scope)
+                                       (float(lo[2]), float(hi[2])), scope, attrs=list(pc.attrs),
+                                       cameras=[(d.id, d.name) for d in self.project.of_kind("vector")
+                                                if any(f["type"] == "Point" for f in d.obj.features)])
         if self._filter_saved is None or getattr(self, "_filter_saved_pc", None) is not pc:
             self._filter_saved = self.sel.mask.copy()        # selection to restore on Cancel — of THIS cloud
             self._filter_saved_pc = pc
@@ -320,16 +322,32 @@ class FilterMixin:
             return
         params = dict(params)
         surface = None
-        if method == "surface":
+        if "surface_id" in params:
             ds = self.project.get(params.pop("surface_id", None))
             surface = ds.obj if ds is not None else None
+        if method == "photo":
+            src = params.get("cameras")
+            cams = None
+            try:
+                if src and src[0] == "csv":
+                    from core.noise_filters import read_cameras
+                    cams = read_cameras(src[1])
+                elif src and src[0] == "vector":
+                    from core.noise_filters import cameras_from_vector
+                    d = self.project.get(src[1])
+                    cams = cameras_from_vector(d.obj) if d is not None else None
+            except Exception as e:  # noqa: BLE001
+                self.filter_dialog.lbl.setText(f"Camera file: {type(e).__name__}: {e}")
+                return
+            params["cameras"] = cams
         idx = self._filter_scope(scope)
         if getattr(self, "_filter_saved_pc", None) is not self.pc:      # edit target switched meanwhile
             self._filter_saved = self.sel.mask.copy()
             self._filter_saved_pc = self.pc
         self._filter_ctx = (method, op, len(idx), self.pc)
         self._run_task("Running filter…", filters.run, (self.pc.xyz, idx, method, params),
-                       dict(surface=surface), self._on_filter_done, report_progress=True)
+                       dict(surface=surface, pc=self.pc, crs=self.project.crs), self._on_filter_done,
+                       report_progress=True)
 
     def _on_filter_done(self, result):
         from core.filters import METHODS
@@ -347,6 +365,29 @@ class FilterMixin:
         self._selection_changed()
         self._refresh_subset_if_open()
         self.filter_dialog.show_result(len(cand), n_scope, info.get("threshold", ""))
+        g = info.get("layers")
+        if g is not None:                                  # CUBE grids → DEM layers
+            from core.project import Dataset
+            from core.surface import Dem
+            src = self._bound_ds()
+            base = src.name if src is not None else "cloud"
+            for key, title in (("z", "CUBE depth"), ("unc95", "CUBE uncertainty 95 %"), ("n_hyp", "CUBE hypotheses")):
+                z = g[key].astype(np.float32)
+                if key == "z":
+                    dem = Dem(z, g["x0"], g["ytop"], g["cell"], "cube")
+                else:
+                    zz = g["z"].astype(np.float32)
+                    vals = np.where(np.isfinite(zz), z, np.nan)
+                    hi = float(np.nanpercentile(vals, 98)) if np.isfinite(vals).any() else 1.0
+                    dem = Dem(zz, g["x0"], g["ytop"], g["cell"], "cube", cvals=vals,
+                              crange=(0.0, max(hi, 1e-6) if key == "unc95" else max(hi, 2.0)), cpalette="Turbo",
+                              meta={"title": title})
+                self.project.add(Dataset(self.project.unique_name(f"{title} · {base}"), "grid", dem,
+                                         crs=self.project.crs, source_crs=self.project.crs,
+                                         derived_from=src.id if src is not None else None,
+                                         edit_version=src.edit_version if src is not None else 0))
+            self._project_changed()
+            self._set_dirty(True)
 
     def filter_finish(self, keep):
         if getattr(self, "_filter_saved_pc", None) is not self.pc:

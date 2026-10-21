@@ -601,6 +601,51 @@ def run(app=None):
         return (f"TIN mesh {len(m.faces):,} tri · alpha shape {a.volume:.0f} m³ (sphere 524) · LOD2 {v:.0f} m³ "
                 f"(600) · pile r {cy[0]['radius']:.3f} m · {len(pl)} planes")
 
+    def cube_s44_filters():
+        from core import cube, noise_filters as nf, s44, uncertainty as un
+        from core.pointcloud import PointCloud
+        rng = np.random.default_rng(7)
+        n = 120_000
+        x, y = rng.uniform(0, 120, n), rng.uniform(0, 90, n)
+        true = -25 + 2 * np.sin(x / 15) + 0.02 * y
+        z = true + rng.normal(0, 0.07, n)
+        sp = rng.choice(n, 400, replace=False)
+        z[sp] += rng.choice([-1, 1], 400) * rng.uniform(0.8, 3, 400)
+        cl = rng.choice(np.setdiff1d(np.arange(n), sp), 500, replace=False)
+        x[cl], y[cl] = rng.normal(60, 1.5, 500), rng.normal(45, 1.5, 500)
+        true = -25 + 2 * np.sin(x / 15) + 0.02 * y
+        z[cl] = true[cl] + rng.uniform(4, 7, 500)
+        xyz = np.c_[x, y, z]
+        bad = np.zeros(n, bool)
+        bad[np.r_[sp, cl]] = True
+        bad &= np.abs(z - true) > 0.5
+        pc = PointCloud(xyz, {"TPU": np.full(n, 0.2, np.float32)}, {"type": "test"}, name="mbes")
+        tab = os.path.join(tmp, "tvu.csv")
+        with open(tab, "w") as f:
+            f.write("x,y,tvu\n")
+            for gx in range(0, 121, 10):
+                for gy in range(0, 91, 10):
+                    f.write(f"{gx},{gy},0.1\n")
+        u = un.resolve({"tvu": {"source": "attribute", "attribute": "TPU", "confidence": "95"},
+                        "thu": {"source": "table", "path": tab, "column": 2, "max_dist": 0, "confidence": "1s"}},
+                       pc, np.arange(n))
+        assert abs(np.median(u["tvu"]) - 0.2 / 1.96) < 1e-6 and abs(np.median(u["thu"]) - 0.1) < 1e-9
+        r = cube.estimate(xyz, np.arange(n), u["tvu"], u["thu"], resolution=1.0)
+        f = np.zeros(n, bool)
+        f[r["candidates"]] = True
+        det, fal = f[bad].mean(), f[~bad].mean()
+        assert det > 0.95 and fal < 0.002, (det, fal)
+        rep, d = s44.assess(xyz, np.arange(n)[~bad], "1a", tvu95=np.full((~bad).sum(), 0.2), ref_cell=2.0)
+        assert rep["aposteriori"]["1a"]["tvu_pct"] > 99 and rep["apriori"]["special"]["tvu_pct"] == 100.0
+        assert abs(float(s44.allowed_tvu("1a", 40.0)) - np.hypot(0.5, 0.013 * 40)) < 1e-12
+        c, _ = nf.clusters(xyz, np.arange(n), radius=1.0, min_points=50)
+        lm, _ = nf.local_mad(xyz, np.arange(n), k=24, n_sigma=4)
+        g = np.zeros(n, bool)
+        g[lm] = True
+        return (f"CUBE detect {det:.1%} / false {fal:.2%} · S-44 1a a-posteriori "
+                f"{rep['aposteriori']['1a']['tvu_pct']:.1f} %, best {rep['best_order_aposteriori']} · "
+                f"local MAD spikes {g[sp].mean():.0%} · clusters {len(c)} pts")
+
     def photogrammetry():
         import cv2  # noqa: F401  (optional: SKIP when OpenCV is not installed)
         from core.sfm import synthetic
@@ -646,6 +691,7 @@ def run(app=None):
                      ("land: terrain / change / stockpile / road / hydro / clearance", land_analyses),
                      ("multi-year cable assessment", multiyear_check),
                      ("meshes / models (planes, piles, LOD2)", meshes_and_models),
+                     ("CUBE / IHO S-44 / noise filters", cube_s44_filters),
                      ("photogrammetry SfM-MVS / stereo rig (OpenCV)", photogrammetry),
                      ("project save / open", project_roundtrip), ("3D render (VisPy/OpenGL)", render)):
         step(name, fn)

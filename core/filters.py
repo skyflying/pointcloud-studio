@@ -10,6 +10,11 @@ METHODS = {
     "grid": "Grid median deviation",
     "surface": "Reference surface deviation",
     "range": "Depth / elevation range",
+    "cube": "CUBE-style (uncertainty, multiple hypotheses)",
+    "iho": "IHO S-44 TVU test",
+    "local": "Robust local surface (MAD)",
+    "cluster": "Isolated clusters",
+    "photo": "Photogrammetry noise (SfM-MVS)",
 }
 
 HELP = {
@@ -24,6 +29,24 @@ HELP = {
     "surface": "Distance from a reference surface (TIN or DEM) — e.g. a surface built from already cleaned data. "
                "Points too far above or below it are outliers.",
     "range": "Points shallower / deeper than given limits (gross errors).",
+    "cube": "After Calder & Mayer (2003): each sounding's vertical / horizontal uncertainty is propagated to the "
+            "grid nodes around it; per node the soundings form depth hypotheses (sea floor, fish / water column, "
+            "multipath …); the sea-floor hypothesis is chosen by density, by agreement with the neighbourhood "
+            "(locale) or by a reference surface (prior). Soundings far from it — in units of their combined "
+            "uncertainty — are candidates. Batch variant: close to, but not identical with CARIS / Qimera CUBE. "
+            "Optionally adds the CUBE depth, uncertainty and hypothesis-count grids as layers.",
+    "iho": "IHO S-44 Ed. 6.0: soundings whose residual to a reference surface (local median surface, or a TIN / "
+           "DEM) exceeds the order's TVU limit √(a² + (b·d)²), and/or whose own TPU exceeds it. "
+           "For the full compliance report use Analysis → IHO S-44 Check.",
+    "local": "A plane through each point's k nearest neighbours (without the point itself); points farther from it "
+             "than N × the neighbours' robust spread (1.4826 · MAD) are candidates. Follows slopes, sand waves and "
+             "structures better than a cell median.",
+    "cluster": "Points are grouped by touching voxels of the given size. Groups smaller than the minimum (and not "
+               "the main surface) are candidates — water-column noise, fish, bubbles, birds, floating blobs.",
+    "photo": "Tests for clouds made from photos (this program's photogrammetry or Metashape / Pix4D / "
+             "RealityCapture): too few supporting image pairs ('views'), residual to the local surface with the "
+             "allowance growing with distance², floating points in front of the surface the cameras saw (needs "
+             "camera positions and orientations), sky-coloured points off the surface (needs RGB).",
 }
 
 
@@ -180,10 +203,12 @@ def z_range(xyz, idx, zmin, zmax, progress=None):
     return idx[out], {"threshold": f"Z outside [{zmin:g}, {zmax:g}]"}
 
 
-def run(xyz, idx, method, params, surface=None, progress=None):
+def run(xyz, idx, method, params, surface=None, progress=None, pc=None, crs=None):
     idx = np.asarray(idx, dtype=np.int64)
     if len(idx) == 0:
         return idx, {"threshold": "no points in scope"}
+    if method in ("cube", "iho", "local", "cluster", "photo"):
+        return _run_extra(xyz, idx, method, dict(params), surface, progress, pc, crs)
     if method == "sor":
         return sor(xyz, idx, progress=progress, **params)
     if method == "radius":
@@ -196,4 +221,69 @@ def run(xyz, idx, method, params, surface=None, progress=None):
         return surface_deviation(xyz, idx, surface, progress=progress, **params)
     if method == "range":
         return z_range(xyz, idx, progress=progress, **params)
+    raise ValueError(method)
+
+
+def _run_extra(xyz, idx, method, p, surface, progress, pc, crs):
+    from core import noise_filters as nf
+    if method == "local":
+        return nf.local_mad(xyz, idx, progress=progress, **p)
+    if method == "cluster":
+        return nf.clusters(xyz, idx, progress=progress, **p)
+    if method == "photo":
+        cams = p.pop("cameras", None)
+        return nf.photogrammetry(xyz, idx, pc.attrs if pc is not None else {}, cams, progress=progress, **p)
+    from core import uncertainty as un
+    depth = np.abs(xyz[idx, 2])
+    if method == "cube":
+        from core import cube
+        u = un.resolve(p.pop("unc"), pc, idx, crs, depth)
+        prior = None
+        if p.get("disambiguation") == "prior":
+            if surface is None:
+                raise ValueError("Choose a reference surface (TIN / DEM) for the 'prior' disambiguation")
+            prior = lambda x, y: surface_z(surface, x, y)  # noqa: E731
+        add_layers = p.pop("add_layers", False)
+        r = cube.estimate(xyz, idx, u["tvu"], u["thu"], prior_z=prior, progress=progress, **p)
+        s = r["summary"]
+        per = s["points"] / max(s["nodes"], 1)
+        hint = (f" · only {per:.1f} soundings per node — a coarser node spacing gives more reliable hypotheses"
+                if per < 3 else "")
+        info = {"threshold": f"{s['nodes']:,} nodes at {s['resolution']:g} m, {s['multi_hyp_nodes']:,} with several "
+                             f"hypotheses ({s['disambiguation']}); flagged beyond {s['k_f']:g} × combined σ · "
+                             + "; ".join(u["notes"]) + hint}
+        if add_layers:
+            if r["grid"] is not None:
+                info["layers"] = r["grid"]
+            else:
+                info["threshold"] += " · grid layers skipped (extent too large for a map at this resolution)"
+        return r["candidates"], info
+    if method == "iho":
+        from core import s44
+        order = p.get("order", "1a")
+        mode = p.get("mode", "residual")
+        lim = s44.allowed_tvu(order, depth)
+        flag = np.zeros(len(idx), bool)
+        notes = [f"{s44.ORDER_LABEL[order]} TVU limit {np.median(lim):.3f} m at median depth"]
+        if mode in ("residual", "either"):
+            if p.get("reference") == "surface":
+                if surface is None:
+                    raise ValueError("Choose a reference surface (TIN / DEM)")
+                zr = surface_z(surface, xyz[idx, 0], xyz[idx, 1])
+            else:
+                zr = s44.local_reference(xyz, idx, p.get("cell", 1.0))
+            res = xyz[idx, 2] - zr
+            f = np.isfinite(res) & (np.abs(res) > lim)
+            flag |= f
+            notes.append(f"residual > limit: {int(f.sum()):,}")
+        if mode in ("tpu", "either"):
+            u = un.resolve({"tvu": p["unc"]["tvu"], "thu": None, "fill_order": p["unc"].get("fill_order", "1a")},
+                           pc, idx, crs, depth, fill=None)
+            tvu95 = u["tvu"] * un.Z95
+            f = np.isfinite(tvu95) & (tvu95 > lim)
+            flag |= f
+            notes.append(f"own TPU > limit: {int(f.sum()):,} ({u['notes'][0]})")
+        if progress:
+            progress(1.0)
+        return idx[flag], {"threshold": " · ".join(notes)}
     raise ValueError(method)

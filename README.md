@@ -5,7 +5,7 @@ A desktop application for viewing, cleaning, and analysing point cloud data from
 <!-- Replace with a real screenshot: save it as docs/screenshot.png -->
 ![PointCloud Studio screenshot](https://raw.githubusercontent.com/skyflying/pointcloud-studio/refs/heads/main/blob/screenshot.png)
 
-**Current version: 0.1.23** · [Releases](../../releases) · [使用說明（繁體中文）](docs/USER_GUIDE.zh-TW.md)
+**Current version: 0.1.24** · [Releases](../../releases) · [使用說明（繁體中文）](docs/USER_GUIDE.zh-TW.md)
 
 ---
 
@@ -74,6 +74,12 @@ A desktop application for viewing, cleaning, and analysing point cloud data from
 - **Scour monitoring**: per structure and survey — reference level from a far-field ring (×D), a baseline surface or a fixed level; maximum scour depth with distance and bearing, mean depth, scour extent (area connected to the pile deeper than a threshold), scour area and volume, change and rate between surveys; radial profiles, depth map, depth layers and GeoTIFFs
 - **Sand wave migration**: bedforms separated from the regional seabed; displacement per window by 2D surface matching (speed and direction, crest-normal for long-crested bedforms) or along the route profile; crest tracking; burial forecast for a cable profile (bedform pattern moved at the observed along-route rate) with years to exposure and exposure-risk segments — a linear extrapolation for planning
 - Results: summary, KP chart, segment and KP-bin tables (double-click → go to the location), coloured segments in 3D, export to CSV (summary / segments / KP bins / stations), Shapefile (PolyLineZ segments) and PNG
+
+**Noise filtering and IHO S-44**
+- **CUBE-style filter** (after Calder & Mayer 2003): each sounding's vertical / horizontal uncertainty is propagated to the grid nodes around it, per node the soundings form depth hypotheses, the sea-floor hypothesis is chosen by locale (neighbourhood agreement), density or a reference surface (prior), and soundings beyond k × their combined uncertainty become candidates; optional CUBE depth, 95 % uncertainty and hypothesis-count grids. A batch variant — close to, but not identical with CARIS / Qimera CUBE
+- **Uncertainty (TPU / TVU / THU) from**: a point attribute (LAS extra bytes, XYZ columns — now read from LAS), an XYZ / CSV file matched by position, a GeoTIFF / BAG raster band, an IHO order model or a constant; values at 95 % or 1σ
+- **IHO S-44 TVU test** in the auto filter, and **Analysis → IHO S-44 Check** (Ed. 6.0.0): a-priori TPU against the TVU / THU limits of every order, a-posteriori residuals to a local median surface or a TIN / DEM, crossline comparison, coverage and holidays, feature-size density indication, best order met; report to Excel / CSV, selection of over-limit soundings, compliance and coverage map layers
+- **Robust local surface (MAD)**, **isolated clusters** (water-column noise, fish, floating blobs) and a **photogrammetry noise** test (supporting image pairs, distance²-scaled residual to the local surface, floating points in front of what the cameras saw, sky-coloured points) — camera CSV (X Y Z ω φ κ f …) or a camera layer
 
 **Reconstruct** (photogrammetry, meshes and models)
 - **Photos / video → point cloud** (Ctrl+Shift+P): classic structure from motion + multi-view stereo, no learned models. RootSIFT features, mutual ratio-test matching verified with MAGSAC, incremental reconstruction (PnP registration, triangulation) and bundle adjustment with self-calibration of focal length and radial distortion (k1, k2); EXIF focal length used as a prior. Video: one frame per interval, the sharpest of each interval. Image pairs: all, sequential (video, strips) or nearest by GPS
@@ -215,6 +221,11 @@ pointcloud-studio/
 
 ### Releases
 
+#### 0.1.24
+- **Added** — Auto filter: CUBE-style multi-hypothesis filter with uncertainty from attributes / XYZ / GeoTIFF / BAG / IHO model, IHO S-44 TVU test, robust local surface (MAD), isolated clusters, photogrammetry noise test. Analysis → IHO S-44 Check with Excel / CSV report and map layers. LAS extra bytes (e.g. TPU, THU, views) are now read as point attributes; the cameras CSV of the photogrammetry also lists image size and principal point.
+- **Added** — Uncertainty from an XYZ / CSV file is read with the pandas parser (millions of rows) and from rasters only within the window the points need (large BAG / GeoTIFF files).
+- **Fixed / robustness** — CUBE nodes, the S-44 reference surface and the crossline surface are stored sparsely, so long survey corridors (tens of km) no longer need a grid over their whole bounding box; S-44 coverage of very large extents is computed per tile; map layers are coarsened (or skipped for CUBE, with a note) when the grid would be too large. The CUBE "locale" neighbourhood no longer leans towards the survey-wide median at the data edge. Camera files: headers such as "X/East" are recognised, and yaw / pitch / roll are no longer mistaken for ω φ κ. The floating-point test uses at most 80 evenly spread cameras. CUBE warns when the node spacing is finer than the sounding density.
+
 #### 0.1.23
 - **Added** — Reconstruct menu: photogrammetry from photos or video (SfM-MVS: features, matching, incremental reconstruction, bundle adjustment with self-calibration, dense SGBM matching with multi-view fusion), georeferencing by camera GPS, ground control points (marking dialog, check points) or levelling; stereo camera rigs (manual / file / chessboard calibration, metric scale from the baseline, several pairs tied by SfM).
 - **Added** — Meshes from any point cloud (2.5D Delaunay, 3D alpha shape, Poisson / ball pivoting with Open3D), post-processing and export (OBJ, PLY, STL, DXF).
@@ -225,6 +236,7 @@ pointcloud-studio/
 - **Fixed** — Auto filter: switching the edit target while the filter window was open made Cancel (restore selection) fail with a size mismatch, and a finished filter could apply its result to the other cloud; the saved selection and the result now belong to the cloud they were made for.
 - **Fixed** — Subset editor: a selection made in a panel that still showed the previous edit target could select wrong points (or raise `IndexError`); such indices are now rejected and the panel is redrawn.
 - **Fixed** — Dense matching could fail with "Dense matching produced no points" (seen in the Windows self-test): the rectified image pairs were cropped and zoomed (up to ×50 for converging pairs), so disparities exceeded the image width and every pair was skipped. Rectification now keeps the original focal length, partners are chosen by their expected overlap, spare partners are tried when too few pairs match, and the error lists the pair messages.
+- **Fixed** — A section drawn where the profiled cloud has no points (outside the cloud, or only surfaces shown) did nothing and raised `IndexError` — also on every later layer show / hide: the empty corridor gave non-integer indices. Empty sections now show the surfaces / other layers normally.
 - **Fixed** — Showing / hiding a point cloud layer while a section profile was open could raise `IndexError` in the profile colours: the section indices belonged to another cloud (the profile follows the first visible cloud when editing is locked). The profile now remembers its cloud and is recomputed when that changes.
 
 #### 0.1.22

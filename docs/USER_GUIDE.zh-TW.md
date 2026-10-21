@@ -1,4 +1,4 @@
-# PointCloud Studio 使用說明（v0.1.23）
+# PointCloud Studio 使用說明（v0.1.24）
 
 點雲檢視、清理與地形建模工具（英文暗色介面），適用於 MBES／LiDAR 測量資料與海纜工程。
 製作者：Mingyi Hsu（smingyi.hsu@gmail.com）
@@ -402,6 +402,27 @@ Cable & Foundations → **Import Structures…** 匯入風機、變電站或樁�
 View → Distance Label 可選 **KP**（海纜、海上管線）或 **Chainage**（道路、陸上管線）；套用於剖面橫軸、游標、
 3D 路由標示、Subset 狀態與開溝體積表（設定會記住）。
 
+## 進階濾點與 IHO S-44
+
+### Auto filter 新增的方法
+- **CUBE-style**：依 Calder & Mayer（2003）的原理。每個水深點的垂直／水平不確定度傳播到附近網格節點；每個節點把點分成數個深度假設（海床、魚群／水中雜訊、多次回波…）；以 **Locale**（與鄰近節點一致，預設）、**Density**（點數最多）或 **Prior**（最接近指定 TIN／DEM）選出海床假設；與它的差距超過 k 倍合成不確定度的點列為可疑點。可勾選加入 CUBE 深度、95 % 不確定度、假設數三個網格圖層。為批次版本，結果與 CARIS／Qimera 的 CUBE 相近但不完全相同。
+- **IHO S-44 TVU test**：殘差（相對局部中位面或 TIN／DEM）超過該等級 TVU 限值、或點本身 TPU 超過限值的點。
+- **Robust local surface (MAD)**：以鄰近 k 點擬合平面（不含該點本身），殘差超過 N 倍穩健離散（1.4826·MAD）者；在斜坡、沙波、結構物附近比格網中位數穩定。
+- **Isolated clusters**：以體素相連分群，小於門檻且非主表面的群集（水中雜訊、魚群、氣泡、飄浮點）。
+- **Photogrammetry noise**：支持影像對太少（`views`）、相對局部表面的殘差（容許值隨距離平方放大）、相機視線上的飄浮點（需相機方位）、天空色的離面點（需 RGB）。相機可用 Reconstruct 產生的相機 CSV（X Y Z ω φ κ f 影像尺寸、主點），或相機向量圖層（只有位置，不能做飄浮點檢查）。
+
+### 不確定度（TPU／TVU／THU）來源
+CUBE 與 S-44 共用：點的屬性欄位（LAS extra bytes 或 XYZ 欄位，如 TPU、TVU、THU，會自動辨識）、另一份 XYZ／CSV（依平面位置對應，可設最大距離）、GeoTIFF／BAG 網格的某一波段（雙線性取值）、IHO 等級模型、固定值。需指定數值是 95 % 信心水準（CARIS／Qimera 的 TPU）或 1σ；沒有值的點以指定 IHO 等級模型補上（S-44 a-priori 檢核則視為不合格）。
+
+### Analysis → IHO S-44 Check
+依 S-44 第 6.0.0 版：TVU = √(a² + (b·d)²)、THU = c + p·d（95 %）。
+- **A-priori**：每點 TPU 與各等級 TVU／THU 限值比較（合格比例，S-44 要求 95 %）。
+- **A-posteriori**：每點相對參考面（局部中位面或 TIN／DEM）的殘差與 TVU 限值比較。
+- **Crosslines**：另一份點雲（交叉測線）與主測線中位面的差值統計與合格比例。
+- **Coverage**：指定格網（預設為該等級特徵物尺寸）下的覆蓋率與空白（holidays）。
+- **特徵物偵測**：只提供「點密度是否足以解析該尺寸」的統計參考，不是偵測測試。
+- 結果視窗可選取超限的點、匯出 Excel／CSV 報告，並可加入「各格網合格比例」與「覆蓋／空白」圖層。結果為輔助判斷，不代表成果認證。
+
 ## 圖層順序（Data 面板）
 - 按住圖層左側的 **⠿** 拖曳到想要的位置（藍線表示放下的位置）；或用右側的 **▲ ▼** 上下移動，⋯ 選單另有「Move to top／Move to bottom」。順序會存進專案。
 - 勾選 **Draw in layer order（預設開啟）** 時，列表中越上面的圖層畫在越前面（點雲、TIN、DEM、網格皆適用），
@@ -451,6 +472,7 @@ View → Distance Label 可選 **KP**（海纜、海上管線）或 **Chainage**
 - 結果為 MSH 資料：Data 面板 ⋯ → **Mesh / model information…** 顯示參數表（雙擊列縮放到該模型，可匯出 CSV）。
 
 ## 版本紀錄
+- **0.1.24**：CUBE-style 濾點（不確定度可來自屬性、XYZ／CSV、GeoTIFF／BAG、IHO 模型）、IHO S-44 TVU 濾點與 Analysis → IHO S-44 Check（報告、超限點選取、合格比例與覆蓋圖層）、穩健局部曲面（MAD）、孤立群集、攝影測量雜訊濾點；LAS 額外欄位（TPU、THU、views…）會讀入；長距離測線（海纜路由）不再需要整個範圍的網格
 - **0.1.23**：圖層可上下移動並依順序顯示；修正開關圖層、切換編輯對象時斷面／自動濾波／Subset 使用錯誤點雲的問題；Reconstruct 選單 — 照片／影片攝影測量（SfM-MVS、自率定、SGBM 密集匹配、GPS／GCP／水平化定位）、雙目相機；任何點雲的網格化（2.5D Delaunay、3D alpha shape、Poisson／Ball pivoting）與 OBJ／PLY／STL／DXF 匯出；點雲模型化（平面、圓柱、建物 LOD1／LOD2）
 - **0.1.22**：多年度評估新增批次（多條海纜、依串接欄位串成整串）與輸出（Excel 多分頁、每條海纜 5 張圖）、年份範圍
 - **0.1.21**：修正水深顯示時剖面圖把海床畫在纜線下方的問題——水深軸改為向下增加，海床／地表一律在纜線或管線上方；

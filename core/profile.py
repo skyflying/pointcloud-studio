@@ -96,7 +96,10 @@ def corridor_points(xyz, idx, sec):
         out["chainage"].append(ch[keep])
         out["offset"].append(off[keep])
         out["z"].append(xyz[ci[keep], 2])
-    res = {k: (np.concatenate(v) if v else np.empty(0)) for k, v in out.items()}
+    # an empty corridor must still give INTEGER indices (a float empty array cannot index the cloud)
+    res = {k: (np.concatenate(v) if v else np.empty(0, dtype=np.int64 if k == "idx" else np.float64))
+           for k, v in out.items()}
+    res["idx"] = res["idx"].astype(np.int64, copy=False)
     order = np.argsort(res["chainage"], kind="stable")
     return {k: v[order] for k, v in res.items()}
 

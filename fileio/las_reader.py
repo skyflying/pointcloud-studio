@@ -17,6 +17,16 @@ def read_las(path):
     xyz = np.column_stack((np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)))
     dims = list(las.point_format.dimension_names)
     attrs = {name: np.asarray(las[d]) for d, name in ATTR_MAP.items() if d in dims}
+    # extra bytes (e.g. TPU / TVU / THU from CARIS or Qimera, 'views' from photogrammetry): numeric 1-D only
+    for d in getattr(las.point_format, "extra_dimension_names", []):
+        if d in attrs or d in ATTR_MAP.values():
+            continue
+        try:
+            a = np.asarray(las[d])
+        except Exception:  # noqa: BLE001
+            continue
+        if a.ndim == 1 and a.dtype.kind in "fiu":
+            attrs[d] = a
 
     h = las.header
     source = {

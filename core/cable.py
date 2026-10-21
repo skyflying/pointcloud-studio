@@ -110,7 +110,8 @@ def corridor(xyz, idx, route, half_width, ch_range=None, chunk=4_000_000):
         out["ch"].append(ch[keep])
         out["off"].append(off[keep])
         out["z"].append(xyz[ci[keep], 2])
-    res = {k: (np.concatenate(v) if v else np.empty(0)) for k, v in out.items()}
+    res = {k: (np.concatenate(v) if v else np.empty(0, dtype=np.int64 if k == "idx" else np.float64))
+           for k, v in out.items()}
     o = np.argsort(res["ch"], kind="stable")
     return {k: v[o] for k, v in res.items()}
 

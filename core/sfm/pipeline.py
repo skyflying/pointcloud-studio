@@ -180,7 +180,8 @@ def write_cameras(path, rec, names=None):
     import csv
     with open(path, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["image", "X", "Y", "Z", "omega_deg", "phi_deg", "kappa_deg", "f_px", "k1", "k2"])
+        w.writerow(["image", "X", "Y", "Z", "omega_deg", "phi_deg", "kappa_deg", "f_px", "k1", "k2", "width",
+                    "height_px", "cx", "cy"])
         for i in np.flatnonzero(rec.registered):
             R = rec.R(i)
             C = rec.centre(i)
@@ -191,7 +192,8 @@ def write_cameras(path, rec, names=None):
             kappa = np.degrees(np.arctan2(-M[1, 0], M[0, 0]))
             it = rec.intr_of(i)
             w.writerow([os.path.basename(rec.paths[i]), f"{C[0]:.4f}", f"{C[1]:.4f}", f"{C[2]:.4f}",
-                        f"{omega:.4f}", f"{phi:.4f}", f"{kappa:.4f}", f"{it.f:.2f}", f"{it.k1:.6f}", f"{it.k2:.6f}"])
+                        f"{omega:.4f}", f"{phi:.4f}", f"{kappa:.4f}", f"{it.f:.2f}", f"{it.k1:.6f}", f"{it.k2:.6f}",
+                        it.width, it.height, f"{it.cx:.2f}", f"{it.cy:.2f}"])
 
 
 def run_photogrammetry(p: PhotoParams, log=print, progress=None, cancel=None):

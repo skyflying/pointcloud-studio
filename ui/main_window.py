@@ -41,6 +41,7 @@ from ui.seabed_mixin import SeabedMixin
 from ui.land_mixin import LandMixin
 from ui.multiyear_ui import MultiYearMixin
 from ui.reconstruct_mixin import ReconstructMixin
+from ui.s44_ui import S44Mixin
 from ui.subset_mixin import ClassifyMixin, FilterMixin, RouteMixin, SubsetMixin
 from ui.export_dialog import ExportDialog
 from ui.import_dialog import XyzImportDialog
@@ -123,7 +124,7 @@ class EmptyState(QWidget):
 
 
 # ---------------------------------------------------------------- main window
-class MainWindow(ReconstructMixin, MultiYearMixin, LandMixin, SeabedMixin, CableMixin, ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteMixin, FilterMixin, SubsetMixin, ProjectFileMixin, ProjectMixin, QMainWindow):
+class MainWindow(S44Mixin, ReconstructMixin, MultiYearMixin, LandMixin, SeabedMixin, CableMixin, ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteMixin, FilterMixin, SubsetMixin, ProjectFileMixin, ProjectMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
@@ -276,6 +277,8 @@ class MainWindow(ReconstructMixin, MultiYearMixin, LandMixin, SeabedMixin, Cable
         self.act_dem = QAction("Create DEM…", self, shortcut="Ctrl+G", triggered=self.create_dem)
         self.act_exp_tin = QAction(icon("export"), "Export TIN…", self, triggered=self.export_tin)
         self.act_exp_dem = QAction(icon("export"), "Export DEM…", self, triggered=self.export_dem)
+        self.act_s44 = QAction("IHO S-44 Check…", self, triggered=self.open_s44_dialog)
+        self.act_s44.setToolTip("Compliance of soundings with an IHO S-44 order: TPU, residuals, crosslines, coverage")
         self.act_photo = QAction("Photos / Video → Point Cloud (SfM-MVS)…", self, shortcut="Ctrl+Shift+P",
                                  triggered=self.open_photo_dialog)
         self.act_photo.setToolTip("Classic structure from motion + multi-view stereo from photos or a video")
@@ -344,6 +347,8 @@ class MainWindow(ReconstructMixin, MultiYearMixin, LandMixin, SeabedMixin, Cable
         m_an.addAction(self.act_design)
         m_an.addAction(self.act_slope)
         m_an.addAction(self.act_contours)
+        m_an.addSeparator()
+        m_an.addAction(self.act_s44)
         m_land = self.menuBar().addMenu("&Land")
         for a in self.land_acts:
             m_land.addAction(a)
@@ -985,6 +990,9 @@ class MainWindow(ReconstructMixin, MultiYearMixin, LandMixin, SeabedMixin, Cable
 
     def _section_colors(self, idx, pc=None):
         pc = self._profile_cloud() if pc is None else pc
+        idx = np.asarray(idx, dtype=np.int64)
+        if pc is None or len(idx) == 0:                  # no points in the corridor (or surfaces only)
+            return np.zeros((0, 4), np.float32)
         mode = self.viewer.color_mode if pc is self.pc else "elevation"
         if mode in SCALAR_MODES and self.viewer.scales[mode].vmin is not None:
             return map_scalar(scalar_values(pc, idx, mode), self.viewer.scales[mode])
