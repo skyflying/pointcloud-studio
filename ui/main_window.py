@@ -493,6 +493,12 @@ class MainWindow(S44Mixin, ReconstructMixin, MultiYearMixin, LandMixin, SeabedMi
         dock.setWidget(scroll)
         dock.setMinimumWidth(330)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        # The side panel never clips its cards: whenever their content changes (layers added, buttons shown,
+        # font / DPI), the dock's minimum width follows the widest card, so every row stays fully visible.
+        self._side_dock, self._side_scroll, self._side_widget = dock, scroll, side
+        side.installEventFilter(self)
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._fit_side_panel)
 
         self.profile = ProfilePanel(self)
         self.profile_dock = QDockWidget("Section profile", self)
@@ -969,6 +975,26 @@ class MainWindow(S44Mixin, ReconstructMixin, MultiYearMixin, LandMixin, SeabedMi
         self._show_routes()
         self._recompute_section()
         self._refresh_subset_if_open()
+
+    def _fit_side_panel(self):
+        dock = getattr(self, "_side_dock", None)
+        if dock is None:
+            return
+        side, scroll = self._side_widget, self._side_scroll
+        side.layout().activate()
+        need = side.minimumSizeHint().width()
+        need += scroll.verticalScrollBar().sizeHint().width() + 2 * scroll.frameWidth() + 4
+        need = max(330, need)
+        if dock.minimumWidth() != need:
+            dock.setMinimumWidth(need)
+            if dock.width() < need:
+                self.resizeDocks([dock], [need], Qt.Horizontal)
+
+    def eventFilter(self, obj, ev):
+        from PySide6.QtCore import QEvent, QTimer
+        if obj is getattr(self, "_side_widget", None) and ev.type() == QEvent.LayoutRequest:
+            QTimer.singleShot(0, self._fit_side_panel)
+        return super().eventFilter(obj, ev)
 
     def _set_nav_visible(self, on):
         from PySide6.QtCore import QSettings
