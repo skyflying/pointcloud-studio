@@ -27,6 +27,8 @@ class ProfilePlot(QWidget):
 
     def __init__(self):
         super().__init__()
+        from ui import chart_theme
+        chart_theme.register(self)                  # repaint when the chart background is switched
         self.setMouseTracking(True)
         self.setMinimumHeight(180)
         self.ch = self.z = self.col = None
@@ -120,10 +122,12 @@ class ProfilePlot(QWidget):
         return f"{0.0 if v == 0 else v:,.{dec}f}"
 
     def paintEvent(self, _):
+        from ui.chart_theme import adapt, colors
+        T = colors()
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(C["bg"]))
+        p.fillRect(self.rect(), QColor(T["bg"]))
         r = self._plot_rect()
-        p.fillRect(r, QColor("#0e1013"))
+        p.fillRect(r, QColor(T["plot"]))
         f = QFont(self.font())
         f.setPointSizeF(max(7.5, f.pointSizeF() - 1))
         p.setFont(f)
@@ -131,21 +135,21 @@ class ProfilePlot(QWidget):
         ys = self._yspan()
         xt, xd = nice_ticks(self.x0, self.x1, max(3, int(r.width() / 90)))
         yt, yd = nice_ticks(self.yc - ys / 2, self.yc + ys / 2, max(3, int(r.height() / 40)))
-        grid = QPen(QColor(255, 255, 255, 18), 1)
+        grid = QPen(QColor(*T["grid_rgba"]), 1)
         for v in xt:
             x, _ = self.to_px(v, 0)
             p.setPen(grid)
             p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
-            p.setPen(QColor(C["muted"]))
+            p.setPen(QColor(T["muted"]))
             lab = self.xfmt(v) if self.xfmt else f"{v:,.{xd}f}"
             p.drawText(QRectF(x - 50, r.bottom() + 4, 100, 16), Qt.AlignHCenter | Qt.AlignTop, lab)
         for v in yt:
             _, y = self.to_px(0, v)
             p.setPen(grid)
             p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
-            p.setPen(QColor(C["muted"]))
+            p.setPen(QColor(T["muted"]))
             p.drawText(QRectF(0, y - 8, ML - 8, 16), Qt.AlignRight | Qt.AlignVCenter, self._zlabel(v, yd))
-        p.setPen(QColor(C["muted"]))
+        p.setPen(QColor(T["muted"]))
         p.drawText(QRectF(r.left(), self.height() - 16, r.width(), 14), Qt.AlignHCenter,
                    self.xlabel)
         p.save()
@@ -175,7 +179,7 @@ class ProfilePlot(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         for lay in self._visible_layers():
             x, y = self.to_px(lay["ch"], lay["z"])
-            col = QColor(lay["color"])
+            col = adapt(lay["color"])
             if lay["kind"] == "points":
                 p.setPen(QPen(col, 2))
                 ok = np.isfinite(x) & np.isfinite(y)
@@ -214,7 +218,7 @@ class ProfilePlot(QWidget):
                     path.moveTo(xx, yy)
                     pen_down = True
             p.setRenderHint(QPainter.Antialiasing)
-            p.setPen(QPen(QColor(color), 1.8))
+            p.setPen(QPen(adapt(color), 1.8))
             p.setBrush(Qt.NoBrush)
             p.drawPath(path)
         # measurement
@@ -233,7 +237,7 @@ class ProfilePlot(QWidget):
         # cursor crosshair
         if self._cursor is not None:
             x, y = self.to_px(*self._cursor)
-            p.setPen(QPen(QColor(255, 255, 255, 60), 1, Qt.DashLine))
+            p.setPen(QPen(QColor(*T["cursor_rgba"]), 1, Qt.DashLine))
             p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
             p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
         p.setClipping(False)
@@ -243,10 +247,10 @@ class ProfilePlot(QWidget):
         ly = r.top() + 4
         for lay in self._visible_layers():
             name = lay["name"] if len(lay["name"]) <= 34 else lay["name"][:32] + "…"
-            p.setPen(QColor(C["text"]))
+            p.setPen(QColor(T["text"]))
             p.drawText(QRectF(lx - 260, ly, 260, 16), Qt.AlignRight | Qt.AlignVCenter, name)
             fm_w = p.fontMetrics().horizontalAdvance(name)
-            p.setPen(QPen(QColor(lay["color"]), 2 if lay["kind"] == "line" else 4))
+            p.setPen(QPen(adapt(lay["color"]), 2 if lay["kind"] == "line" else 4))
             if lay["kind"] == "line":
                 p.drawLine(QPointF(lx - fm_w - 30, ly + 8), QPointF(lx - fm_w - 10, ly + 8))
             else:
@@ -256,12 +260,12 @@ class ProfilePlot(QWidget):
             d = getattr(self, key)
             if d is None or not self.show[key]:
                 continue
-            p.setPen(QColor(C["text"]))
+            p.setPen(QColor(T["text"]))
             p.drawText(QRectF(lx - 40, r.top() + 4, 40, 16), Qt.AlignRight | Qt.AlignVCenter, label)
-            p.setPen(QPen(QColor(color), 2))
+            p.setPen(QPen(adapt(color), 2))
             p.drawLine(QPointF(lx - 66, r.top() + 12), QPointF(lx - 46, r.top() + 12))
             lx -= 80
-        p.setPen(QColor(C["muted"]))
+        p.setPen(QColor(T["muted"]))
         p.drawText(QRectF(r.left() + 8, r.top() + 4, 200, 16), Qt.AlignLeft | Qt.AlignVCenter,
                    f"V.exag {self.vex:g}×")
         p.end()

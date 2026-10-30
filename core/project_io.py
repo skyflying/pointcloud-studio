@@ -44,6 +44,8 @@ def save_project(path, project, sections=(), view=None, subsets=None):
                  "crs": crsmod.to_text(d.crs), "source_crs": crsmod.to_text(d.source_crs),
                  "import_opts": d.import_opts, "derived_from": d.derived_from, "edit_version": d.edit_version,
                  "survey_date": getattr(d, "survey_date", None), "simulated": bool(getattr(d, "simulated", False))}
+        if getattr(d, "style", None):
+            entry["style"] = dict(d.style)
         if d.path:
             entry["path"] = os.path.abspath(d.path)
             try:

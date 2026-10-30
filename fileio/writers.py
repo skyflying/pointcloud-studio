@@ -52,6 +52,8 @@ def default_columns(pc):
 def _values(pc, name, ci):
     if name in ("X", "Y", "Z"):
         return pc.xyz[ci, "XYZ".index(name)]
+    if name in pc.attrs:
+        return pc.attrs[name][ci]
     las = pc.source.get("las")
     if las is not None:
         return np.asarray(las[name][ci])
@@ -73,6 +75,24 @@ def _text_format(pc, name, idx, decimals):
 # ---------------------------------------------------------------- text
 def write_text(pc, idx, path, columns, delimiter=" ", decimals=3, header=True, progress=None, z_as_depth=False):
     """z_as_depth: write the Z column as depth (positive down) — header 'Depth'."""
+    las = pc.source.get("las")
+    lazy = [c for c in columns if c not in ("X", "Y", "Z") and c not in pc.attrs]
+    if las is not None and not hasattr(las, "points") and lazy:
+        # large LAS without records in memory: read the other dimensions once (one pass over the file)
+        idx = np.asarray(idx, dtype=np.int64)
+        got = las.read_dims(idx, lazy)
+        pos = np.empty(int(idx.max()) + 1 if len(idx) else 0, np.int64)
+        pos[idx] = np.arange(len(idx))
+
+        class _Pre:
+            def __init__(self, base):
+                self.xyz, self.attrs, self.source = base.xyz, dict(base.attrs), {}
+        base_pc = pc
+        pc = _Pre(base_pc)
+        for c in lazy:
+            arr = np.zeros(len(base_pc), dtype=got[c].dtype)
+            arr[idx] = got[c][pos[idx]]
+            pc.attrs[c] = arr
     fmts = [_text_format(pc, c, idx, decimals) for c in columns]
     zc = columns.index("Z") if (z_as_depth and "Z" in columns) else None
     with open(path, "w", encoding="utf-8", newline="\n") as f:
@@ -100,6 +120,14 @@ def write_las(pc, idx, path, compress=None, version="1.2", scale=0.001, epsg=Non
         compress = path.lower().endswith(".laz")
     las = pc.source.get("las")
 
+    if las is not None and not hasattr(las, "points"):    # large file: stream the records from the source file
+        from fileio.las_ref import SourceChanged, stream_copy
+        try:
+            stream_copy(las, idx, path, pc.attrs.get("Classification"), compress, progress)
+            return
+        except SourceChanged as e:
+            raise RuntimeError(f"{e}. LAS export keeps all dimensions of the original file, so it must still be "
+                               "there unchanged — restore it, or export as text (XYZ) instead.") from e
     if las is not None:  # LAS → LAS: keep everything from the source
         hdr = copy.deepcopy(las.header)
         with laspy.open(path, mode="w", header=hdr, do_compress=compress) as w:

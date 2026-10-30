@@ -41,8 +41,10 @@ def _outer_start(segs):
     return ends[k][0], ends[k][1]
 
 
-def stitch(routes, field):
-    """Join routes sharing the value of `field` → [Route] (one per value, ≥ 2 members or 1)."""
+def stitch(routes, field, gap_tol=1.0):
+    """Join routes sharing the value of `field` → [Route] (one per value, ≥ 2 members or 1).
+    Members whose ends are more than gap_tol (m) apart are joined through a vertex without a cable level,
+    so the gap is not assessed as cable (it would otherwise be a straight, interpolated fake cable)."""
     groups = {}
     for r in routes:
         v = (r.meta.get("attributes") or {}).get(field)
@@ -58,6 +60,7 @@ def stitch(routes, field):
         i0, rev = _outer_start(segs)
         cur = segs[i0][::-1] if rev else segs[i0]
         used = {i0}
+        gaps = []
         order = [members[i0].name]
         while len(used) < len(segs):
             end = cur[-1, :2]
@@ -72,14 +75,19 @@ def stitch(routes, field):
                     best = (d, j, rv)
             _d, j, rv = best
             nxt = segs[j][::-1] if rv else segs[j]
-            if np.hypot(*(nxt[0, :2] - cur[-1, :2])) <= EPS:
+            dj = float(np.hypot(*(nxt[0, :2] - cur[-1, :2])))
+            if dj <= EPS:
                 nxt = nxt[1:]
+            elif dj > gap_tol:
+                mid = (cur[-1, :2] + nxt[0, :2]) / 2.0
+                cur = np.vstack([cur, [[mid[0], mid[1], np.nan]]])
+                gaps.append(round(dj, 2))
             cur = np.vstack([cur, nxt])
             used.add(j)
             order.append(members[j].name)
         z = cur[:, 2] if np.isfinite(cur[:, 2]).any() else None
         out.append(Route(f"{field} {val}", cur[:, :2], z=z,
-                         meta={"members": order, "attributes": {field: val}, "string": True}))
+                         meta={"members": order, "attributes": {field: val}, "string": True, "gaps": gaps}))
     return out
 
 
@@ -91,12 +99,16 @@ def compact(item_id, kind, res):
     row = {"item": item_id, "type": kind, "length_m": s["length"], "years": f"{min(s['years'])}–{max(s['years'])}",
            "first_reburial": s["first_reburial_year"], "first_exposed": s["first_exposed_year"],
            "first_span": s["first_span_year"], "ever_below_required_m": s["ever_reburial_m"]}
+    if s.get("gaps_m"):
+        row["gaps_not_assessed_m"] = s["gaps_m"]          # joined strings: gaps between member cables
     if s["mode"] == "cumulative":
         row.update(campaigns=len(s["campaign_years"]), campaign_years=", ".join(map(str, s["campaign_years"])),
                    total_reburial_m=s["total_reburial_m"], total_hours=s["total_hours"],
                    beyond_trencher=s["beyond_trencher"])
     else:
         row.update(worst_year=s["worst_year"], worst_reburial_m=s["worst_reburial_m"])
+    if s.get("total_cost") is not None:
+        row.update(total_cost=s["total_cost"], total_cost_pv=s["total_cost_pv"])
     tag = lambda rows: [dict(r, item=item_id) for r in rows]          # noqa: E731
     pts = res["points"]
     points = {"kp": st["kp"], "x": st["x"], "y": st["y"], "cable_top_initial": res["cable_top"],

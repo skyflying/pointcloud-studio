@@ -58,23 +58,30 @@ def trend_panels(res):
 
 
 def year_colors(years):
-    """Years → colours of a rainbow scale (early = blue, late = red), as in the burial-check plots."""
-    from render.colormap import get_lut
-    lut = np.asarray(get_lut("Turbo"))
+    """Years → colours of the 'jet' scale (early = blue, late = red), as in the original burial-check plots.
+    The darkest blue end is skipped so the first year stays visible on the dark background."""
     y0, y1 = min(years), max(years)
     out = {}
     for y in years:
         t = 0.0 if y1 == y0 else (y - y0) / (y1 - y0)
-        t = 0.12 + 0.80 * t                       # skip the near-black ends (invisible on the dark background)
-        c = lut[int(round(t * (len(lut) - 1)))]
-        out[y] = "#{:02x}{:02x}{:02x}".format(*(int(v * 255) for v in c[:3]))
+        t = 0.10 + 0.82 * t                       # skip the darkest ends (dark background)
+
+        def f(x, t=t):
+            return min(max(1.5 - abs(4.0 * t - x), 0.0), 1.0)
+        out[y] = "#{:02x}{:02x}{:02x}".format(int(f(3.0) * 255), int(f(2.0) * 255), int(f(1.0) * 255))
     return out
+
+
+PURPLE, BLUE_BAR = "#b46bd6", "#4c9be8"
 
 
 def figure_set(res, depth):
     """The figures written by "Export figures…" for one cable: [(file stem, title, x, panels, xlabel, xdec)].
-    00 trends · 01 seabed of every year + lowest envelope + cable · 02 seabed lowering and minimum cover ·
-    03 cable level after re-burial each year · 04 re-burial count and first year along the cable."""
+    All in the program's chart style (legends above the frames):
+    00 ISBL (or first seabed) / DSBL / cable level · 01 seabed of every year, lower envelope, DSBL ·
+    02 seabed lowering (inverted) with the required burial, and the minimum cover ·
+    03 cable level after maintenance, each year · 04 re-burial events and first year along the cable ·
+    05 per-year trends."""
     p = res["params"]
     kp = res["st"]["kp"]
     years = sorted(res["series"])
@@ -82,52 +89,101 @@ def figure_set(res, depth):
     ev = (lambda a: -np.asarray(a, float)) if depth else (lambda a: np.asarray(a, float))
     zl = "Depth (m)" if depth else "Elevation (m)"
     sb = np.vstack([res["series"][y]["seabed"] for y in years])
+    has_isbl = res.get("isbl") is not None
+    base = np.asarray(res["isbl"], float) if has_isbl else sb[0]
+    base_lab = "ISBL" if has_isbl else f"seabed {years[0]}"
+    dsbl = np.asarray(res["dsbl"], float) if res.get("dsbl") is not None else None
     with np.errstate(all="ignore"):
-        env = np.nanmin(sb, axis=0)                                  # lowest seabed of all years
-        lowering = np.clip(sb[0] - env, 0, None)
+        env = np.nanmin(np.vstack(([base] if has_isbl else []) + [sb]), axis=0)
+        low = base - env
         covers = np.vstack([res["series"][y]["cover"] for y in years])
         mincov = np.nanmin(covers, axis=0)
-    yrs, tp = trend_panels(res)
-    figs = [("00_trends", "Per-year trends", yrs, tp, "Year", 0)]
-    lines = [(str(y), col[y], ev(res["series"][y]["seabed"])) for y in years]
-    lines += [("lowest seabed (all years)", "#ffffff", ev(env), "dash"), ("cable top (initial)", ORANGE,
-                                                                         ev(res["cable_top"]))]
-    figs.append(("01_seabed_years_envelope", "Seabed of every year, lowest envelope and cable", kp,
-                 [{"lines": lines, "ylabel": zl, "invert": depth}], None, 3))
-    figs.append(("02_lowering_min_cover", "Seabed lowering since the first year and minimum cover", kp,
-                 [{"lines": [("seabed lowering (first year − lowest)", RED, lowering)], "ylabel": "m",
-                   "hlines": [(0.0, GREY, "")]},
+    figs = []
+    # 00
+    l0 = [(base_lab + ("" if has_isbl else " (first year)"), GREY, ev(base))]
+    if res.get("isbl_shaved") is not None:
+        l0.append(("ISBL (peak shaving)", GREY, ev(res["isbl_shaved"]), "dash"))
+    if dsbl is not None:
+        l0.append(("DSBL", RED, ev(dsbl)))
+    l0.append(("buried cable level (initial)", PURPLE, ev(res["cable_top"])))
+    figs.append(("00_seabed_DSBL_cable_level", f"{'ISBL' if has_isbl else 'Seabed'} / DSBL / buried cable level", kp,
+                 [{"lines": l0, "ylabel": zl, "invert": depth}], None, 3))
+    # 01
+    l1 = [(str(y), col[y], ev(res["series"][y]["seabed"])) for y in years]
+    if dsbl is not None:
+        l1.append(("DSBL", RED, ev(dsbl)))
+    l1 += [(f"lower envelope (min {'ISBL & ' if has_isbl else ''}{years[0]}–{years[-1]})", "#ffffff", ev(env)),
+           ("cable level (initial)", PURPLE, ev(res["cable_top"]), "dash")]
+    figs.append(("01_seabed_level", f"Seabed level of every year ({years[0]}–{years[-1]}) and lower envelope", kp,
+                 [{"lines": l1, "ylabel": zl, "invert": depth}], None, 3))
+    # 02
+    req = res.get("req_cover")
+    l2 = [("required burial depth", PURPLE, np.asarray(req, float) if req is not None
+           else np.full(len(kp), float(p["required"])))]
+    l2.append((f"{base_lab} − lower envelope", GREY, low))
+    if dsbl is not None:
+        l2.append((f"max lowering ({base_lab} − DSBL)", "#ffffff", base - dsbl))
+    hl = sorted({float(np.nanmin(req)), float(np.nanmax(req))} if req is not None
+                else {float(p["required"]), float(p.get("reburial_to") or p["required"])})
+    figs.append(("02_seabed_lowering", "Seabed lowering (downwards) and minimum cover", kp,
+                 [{"lines": l2, "ylabel": "lowering (m)", "invert": True,
+                   "fills": [(f"0 to ({base_lab} − lower envelope)", "#ff9db0", 0.0,
+                              np.where(np.isfinite(low) & (low > 0), low, np.nan))],
+                   "hlines": [(v, PURPLE, f"{v:g} m") for v in hl]},
                   {"lines": [("minimum cover over all years", GREEN, mincov)], "ylabel": "cover (m)",
-                   "hlines": [(p["required"], RED, f"required {p['required']:g} m"),
+                   "hlines": [(p["required"], RED, f"trigger {p['required']:g} m"),
                               (p["target"], ORANGE, f"target {p['target']:g} m"), (0.0, GREY, "exposed below")]}],
                  None, 3))
-    cl = [(str(y), col[y], ev(res["series"][y]["top_after"])) for y in years]
-    cl += [("lowest seabed (all years)", "#ffffff", ev(env), "dash"), ("cable top (initial)", ORANGE,
-                                                                      ev(res["cable_top"]), "dash")]
-    figs.append(("03_cable_level_after_reburial", "Cable level after re-burial, each year"
+    # 03
+    l3 = [(str(y), col[y], ev(res["series"][y]["top_after"])) for y in years]
+    l3 += [("lower envelope", "#ffffff", ev(env), "dash")]
+    figs.append(("03_cable_level_after_maintenance", "Cable level after maintenance, each year"
                  + ("" if p["mode"] == "cumulative" else " (independent mode: unchanged)"), kp,
-                 [{"lines": cl, "ylabel": zl, "invert": depth}], None, 3))
+                 [{"lines": l3, "ylabel": zl, "invert": depth}], None, 3))
+    # 04
     pts = res["points"]
-    figs.append(("04_reburial_count", "Re-burial count and first year along the cable", kp,
-                 [{"lines": [("number of re-burials" if p["mode"] == "cumulative" else "years needing re-burial",
-                              RED, pts["count"].astype(float))], "ylabel": "count", "ydec": 0},
+    cnt_lab = "re-burial events" if p["mode"] == "cumulative" else "years needing re-burial"
+    figs.append(("04_reburial_events", "Re-burial events and first re-burial year along the cable", kp,
+                 [{"lines": [], "bars": [(cnt_lab, BLUE_BAR, pts["count"].astype(float))], "ylabel": "count",
+                   "ydec": 0},
                   {"lines": [("first year", "#4cc9f0", pts["first_year"])], "ylabel": "year", "ydec": 0}], None, 3))
+    # 05
+    yrs, tp = trend_panels(res)
+    figs.append(("05_per_year_trends", "Per-year trends", yrs, tp, "Year", 0))
     return figs
 
 
 def render_figure(path, title, x, panels, xlabel=None, xdec=3, width=1800):
     """Draw one figure with the chart widget (off screen) and save it as PNG."""
     from PySide6.QtGui import QColor, QPainter, QPixmap
+    from ui.chart_theme import colors
+    T = colors()
+    from PySide6.QtGui import QFont, QFontMetrics
     ch = KPChart()
-    h = 220 * len(panels) + 50
+    fnt = QFont(ch.font())
+    fnt.setPointSizeF(max(7.5, fnt.pointSizeF() - 1.5))
+    fm = QFontMetrics(fnt)
+    h = 50
+    for pan in panels:                            # each panel: plot + the rows its legend needs above the frame
+        labels = [ln[0] for ln in pan["lines"] if ln[0]] + [f[0] for f in pan.get("fills", [])] + \
+            [b[0] for b in pan.get("bars", [])]
+        room = width - 80 - fm.horizontalAdvance(pan.get("ylabel", "")) - 16
+        rows, x_ = 1, 0
+        for lab in labels:
+            w_ = fm.horizontalAdvance("■ " + lab) + 14
+            if x_ > 0 and x_ + w_ > room:
+                rows += 1
+                x_ = 0
+            x_ += w_
+        h += 230 + (rows - 1) * fm.height()
     ch.setMinimumHeight(0)
     ch.setFixedSize(width, h)                     # the widget's minimum height must not crop the figure
     ch.set_data(x, panels, xlabel=xlabel, xdec=xdec)
     img = ch.grab()
     out = QPixmap(width, h + 34)
-    out.fill(QColor(C["surface"]))
+    out.fill(QColor(T["surface"]))
     pnt = QPainter(out)
-    pnt.setPen(QColor(C["text"]))
+    pnt.setPen(QColor(T["text"]))
     f = pnt.font()
     f.setPointSizeF(f.pointSizeF() + 1)
     f.setBold(True)
@@ -278,6 +334,12 @@ class MultiYearDialog(QDialog):
         b.setToolTip("Several seabed files at once; the year is taken from each file name (e.g. seabed_2031.tif)")
         b.clicked.connect(cb.multiyear_import)
         row.addWidget(b)
+        b2 = QPushButton("Link files (read when run)…")
+        b2.setToolTip("Yearly seabed rasters (GeoTIFF / ASC …) that are NOT loaded into the project: each is read "
+                      "only along the cable when the assessment runs — for many years of model results "
+                      "without filling the memory")
+        b2.clicked.connect(cb.multiyear_link_files)
+        row.addWidget(b2)
         v.addLayout(row)
         self.years = YearTable(cb.multiyear_set)
         yr0 = QHBoxLayout()
@@ -292,6 +354,54 @@ class MultiYearDialog(QDialog):
             yr0.addWidget(w_)
         v.addLayout(yr0)
         v.addWidget(self.years)
+        dr = QHBoxLayout()
+        self.cmb_dsbl = QComboBox()
+        self.cmb_dsbl.setToolTip("Optional: the deepest predicted seabed (e.g. a DSBL / LSBL surface). Drawn in the "
+                                 "report figures (DSBL line, maximum lowering); it does not change the assessment.")
+        self.cmb_isbl = QComboBox()
+        self.cmb_isbl.setToolTip("Optional: the installation seabed (ISBL). Used in the report figures and — if chosen "
+                                 "below — to derive the initial cable level (ISBL − required burial)")
+        dr.addWidget(_muted("Installation seabed (ISBL, optional)"))
+        dr.addWidget(self.cmb_isbl, 1)
+        dr.addWidget(_muted("Deepest seabed (DSBL, optional)"))
+        dr.addWidget(self.cmb_dsbl, 1)
+        bf = QPushButton("…")
+        bf.setFixedWidth(30)
+        bf.setToolTip("Link an ISBL / DSBL raster file (read when run)")
+        bf.clicked.connect(lambda: cb.multiyear_link_files(single=True))
+        dr.addWidget(bf)
+        v.addLayout(dr)
+        cl = QFormLayout()
+        self.cmb_level = QComboBox()
+        self.cmb_level.addItem("Cable-top Z of the route (as laid)", "route")
+        self.cmb_level.addItem("ISBL − required burial (sand-wave rule, peak shaving)", "isbl")
+        self.cmb_level.setToolTip("Initial cable level. From the ISBL: peak shaving (cut-only, slope limit), then the "
+                                  "required burial is subtracted — larger in sand-wave areas (steep ISBL, or ISBL far "
+                                  "above the DSBL). The route then needs no cable-top Z.")
+        cl.addRow("Initial cable level", self.cmb_level)
+        self.sw_box = QWidget()
+        swv = QVBoxLayout(self.sw_box)
+        swv.setContentsMargins(0, 0, 0, 0)
+        sh = QHBoxLayout()
+        sh2 = QHBoxLayout()
+        swv.addLayout(sh)
+        swv.addLayout(sh2)
+        self.sw_req = _dsp(1.5, 0.0, 20.0, 0.1, 2)
+        self.ot_req = _dsp(0.5, 0.0, 20.0, 0.1, 2)
+        self.sw_slope = _dsp(2.5, 0.0, 45.0, 0.5, 1)
+        self.sw_dd = _dsp(7.5, 0.0, 100.0, 0.5, 1)
+        self.peak = _dsp(15.0, 0.0, 89.0, 1.0, 1)
+        self.peak.setSpecialValueText("off")
+        for k_, (lab_, w_) in enumerate((("sand wave", self.sw_req), ("other", self.ot_req), ("slope >", self.sw_slope),
+                                         ("ISBL−DSBL >", self.sw_dd), ("peak shaving ≤", self.peak))):
+            (sh if k_ < 2 else sh2).addWidget(_muted(lab_))
+            (sh if k_ < 2 else sh2).addWidget(w_)
+        sh.addStretch(1)
+        sh2.addStretch(1)
+        cl.addRow("Required burial", self.sw_box)
+        v.addLayout(cl)
+        self.cmb_level.currentIndexChanged.connect(lambda _i: self.sw_box.setEnabled(self.cmb_level.currentData() == "isbl"))
+        self.sw_box.setEnabled(False)
         v.addWidget(_section("Criteria"))
         f2 = QFormLayout()
         self.diam = _dsp(0.2, 0.01, 5.0, 0.01, 3)
@@ -319,17 +429,55 @@ class MultiYearDialog(QDialog):
         self.maxc = _dsp(0.0, 0.0, 20.0, 0.1, 2)
         self.maxc.setSpecialValueText("— (no limit)")
         self.maxc.setToolTip("Deepest cover the trencher can achieve; stretches needing more are flagged")
-        self.minl = _dsp(5.0, 0.0, 1000.0, 1.0, 1)
+        self.minl = _dsp(0.0, 0.0, 1000.0, 1.0, 1)
         self.minl.setToolTip("Shorter stretches are not re-buried (not worth a trencher run)")
         self.merge = _dsp(20.0, 0.0, 1000.0, 5.0, 0)
         self.merge.setToolTip("Stretches closer than this are trenched in one run")
         self.rate = _dsp(0.0, 0.0, 10000.0, 10.0, 0, " m/h")
         self.rate.setSpecialValueText("— (no time estimate)")
         self.step = _dsp(1.0, 0.1, 50.0, 0.5, 2)
+        self.trig = QComboBox()
+        self.trig.addItem("Cover less than the trigger below", "cover")
+        self.trig.addItem("Exposed (cable above the seabed)", "exposed")
+        self.trig.setToolTip("What starts a re-burial: low cover, or exposure only (as the original script)")
+        self.minrun = _dsp(7.0, 0.0, 1000.0, 1.0, 1)
+        self.minrun.setSpecialValueText("— (any length)")
+        self.minrun.setToolTip("A triggering stretch must be at least this long, continuously; shorter ones are "
+                               "not re-buried")
+        self.settle = QCheckBox("Short exposures: the cable settles onto the seabed (cumulative)")
+        self.settle.setChecked(True)
+        self.settle.setToolTip("Where the cable is exposed over less than the minimum continuous length (and not "
+                               "re-buried), its level becomes the seabed level for the following years")
+        self.act = QComboBox()
+        self.act.addItem("Re-bury to the cover below", "to_cover")
+        self.act.addItem("Lower the cable by", "lower_by")
+        self.lowby = _dsp(1.5, 0.0, 20.0, 0.1, 2)
+        ar = QHBoxLayout()
+        ar.addWidget(self.act, 1)
+        ar.addWidget(_muted("by"))
+        ar.addWidget(self.lowby)
+        self.act.currentIndexChanged.connect(lambda _i: self.lowby.setEnabled(self.act.currentData() == "lower_by"))
+        self.trig.currentIndexChanged.connect(lambda _i: self.req.setEnabled(self.trig.currentData() == "cover"))
+        self.lowby.setEnabled(False)
+        self.cost = _dsp(0.0, 0.0, 1e9, 100.0, 2)
+        self.cost.setSpecialValueText("— (no cost)")
+        self.disc = _dsp(0.0, 0.0, 50.0, 0.5, 2)
+        self.disc.setSuffix(" %")
+        self.basey = QSpinBox(minimum=1899, maximum=2200, value=1899)
+        self.basey.setSpecialValueText("first year")
+        cr = QHBoxLayout()
+        for lab_, w_ in (("per m", self.cost), ("discount", self.disc), ("to", self.basey)):
+            cr.addWidget(_muted(lab_))
+            cr.addWidget(w_)
+        f3.addRow("Re-burial trigger", self.trig)
         f3.addRow("Re-bury where cover is less than", self.req)
+        f3.addRow("Only continuous stretches of at least", self.minrun)
+        f3.addRow(self.settle)
+        f3.addRow("Re-burial action", ar)
         f3.addRow("Re-bury to cover", self.to)
+        f3.addRow("Re-burial cost", cr)
         f3.addRow("Trencher max. burial (cover)", self.maxc)
-        f3.addRow("Ignore stretches shorter than", self.minl)
+        f3.addRow("After joining, ignore stretches shorter than", self.minl)
         f3.addRow("Join stretches closer than", self.merge)
         f3.addRow("Trencher progress", self.rate)
         f3.addRow("Step along the cable", self.step)
@@ -341,8 +489,7 @@ class MultiYearDialog(QDialog):
         b = QPushButton("Run assessment")
         b.setProperty("primary", True)
         b.clicked.connect(self._run)
-        row.addWidget(b)
-        v.addLayout(row)
+        self.btn_run = b
         v.addWidget(_section("Result"))
         self.lbl_sum = QLabel("Run the assessment to see the result.")
         self.lbl_sum.setWordWrap(True)
@@ -370,7 +517,11 @@ class MultiYearDialog(QDialog):
         self.table.setMinimumHeight(240)
         self.table.cellDoubleClicked.connect(self._row_clicked)
         v.addWidget(self.table)
-        brow = QHBoxLayout()
+        from ui.chart_theme import selector
+        crow = QHBoxLayout()
+        crow.addStretch()
+        crow.addWidget(selector(self))
+        v.addLayout(crow)
         self.btns = []
         for label, fn in (("Export Excel…", cb.multiyear_export_excel), ("Export figures…", cb.multiyear_export_figures),
                           ("Export CSV…", cb.multiyear_export_csv), ("Export GIS…", cb.multiyear_export_gis),
@@ -379,8 +530,10 @@ class MultiYearDialog(QDialog):
             bb.clicked.connect(fn)
             bb.setEnabled(False)
             self.btns.append(bb)
-            brow.addWidget(bb)
-        v.addLayout(brow)
+        # run + export buttons in a footer that is always visible; the dialog fits its content and the screen
+        from ui.dialog_fit import fit_dialog, make_footer
+        make_footer(outer, [(self.lbl_msg, 1), (self.btn_run, 0)], self.btns)
+        fit_dialog(self, body, scroll, (780, 1000))
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -432,7 +585,7 @@ class MultiYearDialog(QDialog):
         for b in self.btns:
             b.setEnabled(True)
 
-    def set_context(self, cables, seabeds, depth, fields=()):
+    def set_context(self, cables, seabeds, depth, fields=(), extra=()):
         """cables: [(id, name, kp_range)], seabeds: [(id, name, year, simulated)], fields: route attributes"""
         self.depth = depth
         un = {self.lst_cables.item(k).data(Qt.UserRole) for k in range(self.lst_cables.count())
@@ -472,6 +625,16 @@ class MultiYearDialog(QDialog):
             self.k0.setValue(min(k))
             self.k1.setValue(max(k))
         self.years.fill(sorted(seabeds, key=lambda s: (s[2] is None, s[2] or 0, s[1])))
+        for cmb, hints in ((self.cmb_dsbl, ("DSBL", "LSBL")), (self.cmb_isbl, ("ISBL",))):
+            cur = cmb.currentData()
+            cmb.clear()
+            cmb.addItem("(none)", None)
+            for i, n, _y, _sim in list(seabeds) + list(extra):
+                cmb.addItem(n, i)
+            j = cmb.findData(cur) if cur is not None else -1
+            if j < 0:                                # suggest a dataset named like DSBL / LSBL / ISBL
+                j = next((k for k in range(1, cmb.count()) if any(t in cmb.itemText(k).upper() for t in hints)), 0)
+            cmb.setCurrentIndex(j)
 
     def show_error(self, m):
         self.lbl_msg.setText(f"<span style='color:{C['danger']}'>●  {m}</span>")
@@ -486,7 +649,9 @@ class MultiYearDialog(QDialog):
         if batch and self.cmb_what.currentData() != "cables" and self.cmb_string.currentData() is None:
             return self.show_error("Choose the string field to join cables into strings")
         if not batch and self.cmb_cable.currentData() is None:
-            return self.show_error("Import the cable profile (a route with a cable-top column) first")
+            return self.show_error("Import the cable route first")
+        if not batch and self.cmb_level.currentData() == "route" and "(no cable Z)" in self.cmb_cable.currentText():
+            return self.show_error("This route has no cable-top Z — choose 'ISBL − required burial' as the cable level")
         ys = self.years.chosen()
         a, b = self.y0.value(), self.y1.value()
         ys = [t for t in ys if t[1] is None or ((a < 1900 or t[1] >= a) and (b < 1900 or t[1] <= b))]
@@ -499,7 +664,22 @@ class MultiYearDialog(QDialog):
         k = self._kp.get(self.cmb_cable.currentData())
         if rng and k and (max(rng) < min(k) or min(rng) > max(k) or abs(rng[1] - rng[0]) < 1e-9):
             return self.show_error(f"KP range outside the cable (KP {min(k):.3f} – {max(k):.3f})")
+        for cmb, lab in ((self.cmb_dsbl, "DSBL"), (self.cmb_isbl, "ISBL")):
+            if cmb.currentData() is not None and any(i == cmb.currentData() for i, _y, _s in ys):
+                return self.show_error(f"The {lab} dataset is also ticked as a year — untick it in the year list")
+        if self.cmb_level.currentData() == "isbl" and self.cmb_isbl.currentData() is None:
+            return self.show_error("Choose the ISBL to derive the cable level from it")
         self.cb.multiyear_run({"cable": self.cmb_cable.currentData(), "years": ys, "kp_range": rng,
+                               "dsbl": self.cmb_dsbl.currentData(), "isbl": self.cmb_isbl.currentData(),
+                               "rules": dict(trigger=self.trig.currentData(), min_run=self.minrun.value(),
+                                             settle_short=self.settle.isChecked(), action=self.act.currentData(),
+                                             lower_by=self.lowby.value(), cost_per_m=self.cost.value(),
+                                             discount_rate=self.disc.value() / 100.0,
+                                             base_year=self.basey.value() if self.basey.value() >= 1900 else None,
+                                             cable_level=self.cmb_level.currentData(),
+                                             req_sandwave=self.sw_req.value(), req_other=self.ot_req.value(),
+                                             sw_slope_deg=self.sw_slope.value(), sw_isbl_dsbl=self.sw_dd.value(),
+                                             peak_deg=self.peak.value()),
                                "batch": {"cables": chosen_cables, "field": self.cmb_string.currentData(),
                                          "what": self.cmb_what.currentData()} if batch else None,
                                "diameter": self.diam.value(), "gap_min": self.gap.value(),
@@ -651,6 +831,7 @@ class MultiYearMixin:
         self._multiyear_result = None
         self._multiyear_batch = None
         self._my_items, self._my_years, self._my_params = {}, [], {}
+        self._my_files = {}                  # linked rasters read only when run: path → {"year", "sim"}
 
     def open_multiyear_dialog(self):
         if self.multiyear_dialog is None:
@@ -664,17 +845,33 @@ class MultiYearMixin:
         if getattr(self, "multiyear_dialog", None) is None:
             return
         P = self.project
-        cables = [(d.id, d.name, d.obj.kp_range()) for d in P.of_kind("route") if d.obj.z is not None]
+        # routes without a cable-top Z can be assessed when the cable level comes from the ISBL
+        cables = [(d.id, d.name + ("" if d.obj.z is not None else "  (no cable Z)"), d.obj.kp_range())
+                  for d in P.of_kind("route")]
         seabeds = []
         for d in P.datasets:
             if d.kind in ("grid", "tin", "points") and getattr(d.obj, "cvals", None) is None:
                 y = int(d.survey_date[:4]) if d.survey_date and d.survey_date[:4].isdigit() else None
                 seabeds.append((d.id, d.name + ("  (points)" if d.kind == "points" else ""), y, d.simulated))
         from core.multiyear_batch import attribute_fields
-        fields = attribute_fields([d.obj for d in P.of_kind("route") if d.obj.z is not None])
-        self.multiyear_dialog.set_context(cables, seabeds, self.depth_mode, fields)
+        fields = attribute_fields([d.obj for d in P.of_kind("route")])
+        files = getattr(self, "_my_files", {})
+        for path, f in files.items():
+            if f.get("year") is not None:
+                seabeds.append(("file:" + path, os.path.basename(path) + "  (linked)", f["year"], f["sim"]))
+        extra = [("file:" + p_, os.path.basename(p_) + "  (linked)", None, False) for p_, f in files.items()
+                 if f.get("year") is None]
+        self.multiyear_dialog.set_context(cables, seabeds, self.depth_mode, fields, extra)
 
     def multiyear_set(self, ds_id, year=..., simulated=None):
+        if isinstance(ds_id, str) and ds_id.startswith("file:"):
+            f = self._my_files.get(ds_id[5:])
+            if f is not None:
+                if year is not ...:
+                    f["year"] = year
+                if simulated is not None:
+                    f["sim"] = simulated
+            return
         ds = self.project.get(ds_id)
         if ds is None:
             return
@@ -685,6 +882,50 @@ class MultiYearMixin:
             ds.simulated = simulated
         self._set_dirty(True)
         self._refresh_data_card()
+
+    def multiyear_link_files(self, single=False):
+        """Link raster files without loading them: they are read along the cable only when the assessment runs."""
+        flt = "Rasters (*.tif *.tiff *.asc *.grd *.TIF *.TIFF *.ASC *.GRD);;All files (*)"
+        if single:
+            p, _ = QFileDialog.getOpenFileName(self, "ISBL / DSBL raster", "", flt)
+            paths = [p] if p else []
+        else:
+            paths, _ = QFileDialog.getOpenFileNames(self, "Seabed rasters, one per year (read when run)", "", flt)
+        if not paths:
+            return
+        sim = None
+        for p in paths:
+            if single:
+                self._my_files[p] = {"year": None, "sim": False}
+                continue
+            m = YEAR_RE.findall(os.path.basename(p))
+            if m:
+                y = int(m[-1])
+            else:
+                y, ok = QInputDialog.getInt(self, "Year", f"Year of {os.path.basename(p)}:", 2025, 1900, 2200)
+                if not ok:
+                    return
+            if sim is None:
+                ans = QMessageBox.question(self, "Surveys or model results?",
+                                           f"{len(paths)} file(s). Are these modelled (simulated) seabeds?\n"
+                                           "Yes = simulated, No = surveys.", QMessageBox.Yes | QMessageBox.No,
+                                           QMessageBox.Yes)
+                sim = ans == QMessageBox.Yes
+            self._my_files[p] = {"year": y, "sim": sim}
+        self._multiyear_context()
+        self.statusBar().showMessage(f"{len(paths)} file(s) linked — read along the cable when the assessment runs",
+                                     8000)
+
+    def _my_source(self, sid):
+        """Project dataset object, or a linked raster file (read when run)."""
+        if isinstance(sid, str) and sid.startswith("file:"):
+            from core.raster_source import RasterSource
+            path = sid[5:]
+            if not os.path.isfile(path):
+                return None, os.path.basename(path)
+            return RasterSource(path, self.project.crs), os.path.basename(path)
+        d = self.project.get(sid)
+        return (d.obj, d.name) if d is not None else (None, None)
 
     def multiyear_import(self):
         from ui.crs_dialog import CrsDialog
@@ -728,11 +969,12 @@ class MultiYearMixin:
         r = P.get(sp["cable"]) if sp.get("batch") is None else True
         ys = []
         for i, y, sim in sp["years"]:
-            d = P.get(i)
-            if d is None or r is None:
+            obj, name = self._my_source(i)
+            if obj is None or r is None:
                 self._multiyear_context()
-                return self.multiyear_dialog.show_error("A dataset was removed — check the choices and run again")
-            ys.append({"name": d.name, "year": y, "simulated": sim, "obj": d.obj})
+                return self.multiyear_dialog.show_error(f"{name or 'A dataset'} is no longer available — check the "
+                                                        "choices and run again")
+            ys.append({"name": name, "year": y, "simulated": sim, "obj": obj})
         dup = sorted({y["year"] for y in ys if sum(1 for z in ys if z["year"] == y["year"]) > 1})
         if dup:
             return self.multiyear_dialog.show_error(f"More than one dataset for year(s) {', '.join(map(str, dup))}")
@@ -740,6 +982,15 @@ class MultiYearMixin:
                       required=sp["required"], merge_gap=sp["merge_gap"], rate=sp["rate"], step=sp["step"],
                       mode=sp["mode"], reburial_to=sp["reburial_to"], max_cover=sp["max_cover"],
                       min_len=sp["min_len"])
+        params.update(sp.get("rules") or {})
+        names = {}
+        for key in ("dsbl", "isbl"):
+            if sp.get(key) is not None:
+                obj, name = self._my_source(sp[key])
+                if obj is not None:
+                    params[key] = obj
+                    names[key] = name
+        self._my_names = names
         self._my_years, self._my_params = ys, params
         if sp.get("batch"):
             from core import multiyear_batch as mb
@@ -748,6 +999,13 @@ class MultiYearMixin:
             items = [] if b["what"] == "strings" else [(d.name, "cable", d.obj) for d in routes]
             if b["what"] != "cables" and b["field"]:
                 items += [(st.name, "string", st) for st in mb.stitch([d.obj for d in routes], b["field"])]
+            # item ids must be unique (two cables with the same name would overwrite each other)
+            seen, uniq = {}, []
+            for iid, kind, rt in items:
+                n = seen.get(iid, 0)
+                seen[iid] = n + 1
+                uniq.append((iid if n == 0 else f"{iid} ({n + 1})", kind, rt))
+            items = uniq
             if not items:
                 return self.multiyear_dialog.show_error("Nothing to assess — no cable has a value in the string field")
             self._my_items = {iid: (kind, rt) for iid, kind, rt in items}
@@ -756,6 +1014,7 @@ class MultiYearMixin:
             return
         self._cable_ctx = {"kind": "multiyear", "route_id": r.id, "route": r.name}
         self._my_items = {r.name: ("cable", r.obj)}
+        self._my_from_batch = False                    # a new single run replaces any earlier batch
         self._run_task("Multi-year assessment…", multiyear.assess, (), dict(route=r.obj, years=ys,
                                                                           kp_range=sp["kp_range"], **params),
                        self._on_multiyear_done, report_progress=True)
@@ -778,6 +1037,7 @@ class MultiYearMixin:
             return
         rd = next((d for d in self.project.of_kind("route") if d.obj is rt), None)
         self._cable_ctx = {"kind": "multiyear", "route_id": rd.id if rd else None, "route": item_id}
+        self._my_from_batch = True                     # keep the batch (its summary stays in the table list)
         self._run_task(f"Opening {item_id}…", multiyear.assess, (), dict(route=rt, years=self._my_years,
                                                                         **self._my_params),
                        self._on_multiyear_done, report_progress=True)
@@ -785,6 +1045,10 @@ class MultiYearMixin:
     @Slot(object)
     def _on_multiyear_done(self, res):
         self._close_progress()
+        if not getattr(self, "_my_from_batch", False):
+            # single run: the earlier batch (other items, other settings) no longer belongs to this result
+            self._multiyear_batch = None
+            self.multiyear_dialog.batch = None
         self._multiyear_result = res
         self.multiyear_dialog.show_result(res, self.depth_mode)
         s = res["summary"]
@@ -814,9 +1078,16 @@ class MultiYearMixin:
         self.viewer.set_analysis_overlay(lines, labels[:80])
 
     # ---------------------------------------------------------------- exports
+    def _my_need_single(self, what):
+        if self._multiyear_result is None:
+            self.statusBar().showMessage(f"{what}: double-click an item of the batch summary to open it first "
+                                         "(Excel and figures cover the whole batch)", 10000)
+            return True
+        return False
+
     def multiyear_export_csv(self):
         res = self._multiyear_result
-        if res is None:
+        if self._my_need_single("CSV export"):
             return
         path, _ = QFileDialog.getSaveFileName(self, "Export (CSV)", "multiyear.csv", "CSV (*.csv)")
         if not path:
@@ -842,6 +1113,8 @@ class MultiYearMixin:
             fh.write(f"cable,\"{res['route']}\"\n")
             for k, v in res["params"].items():
                 fh.write(f"{k},{v}\n")
+            for k, n in getattr(self, "_my_names", {}).items():
+                fh.write(f"{k},\"{n}\"\n")
             fh.write("assumption,\"" + ("cumulative: re-burial carried out in the year it is needed, later years use "
                                         "the lowered cable" if res["summary"]["mode"] == "cumulative" else
                                         "independent: every year against the original cable level")
@@ -851,7 +1124,7 @@ class MultiYearMixin:
     def multiyear_export_gis(self):
         from fileio import vector_io
         res = self._multiyear_result
-        if res is None:
+        if self._my_need_single("GIS export"):
             return
         path, flt = QFileDialog.getSaveFileName(self, "Export segments (GIS)", "multiyear.gpkg", vector_io.WRITE_FILTER)
         if not path:
@@ -880,7 +1153,9 @@ class MultiYearMixin:
         self._write_feature_groups(path, groups)
 
     def _my_settings(self):
-        p = dict(self._my_params)
+        p = {k: v for k, v in self._my_params.items() if k not in ("dsbl", "isbl")}
+        for k, n in getattr(self, "_my_names", {}).items():
+            p[k] = n
         p["years"] = ", ".join(f"{y['year']}{' (sim)' if y.get('simulated') else ''}" for y in self._my_years)
         p["seabed_datasets"] = "; ".join(y["name"] for y in self._my_years)
         p["assumption"] = ("cumulative: re-burial carried out in the year it is needed, later years use the lowered "
@@ -960,10 +1235,13 @@ class MultiYearMixin:
             if self._multiyear_batch is None:
                 res = self._multiyear_result
             else:
+                if item not in self._my_items:
+                    continue
                 _kind, rt = self._my_items[item]
                 res = multiyear.assess(rt, self._my_years, **self._my_params)
             for stem, title, x, panels, xl, xd in figure_set(res, self.depth_mode):
-                render_figure(os.path.join(folder, f"{safe(item)}_{stem}.png"), f"{item} — {title}", x, panels, xl, xd)
+                render_figure(os.path.join(folder, f"{safe(item)}_{stem}.png"), f"{item} — {title}", x, panels,
+                              xl, xd)
                 n += 1
         dlg.setValue(len(todo))
         self.statusBar().showMessage(f"Saved {n} figure(s) to {folder}", 10000)
@@ -971,14 +1249,16 @@ class MultiYearMixin:
     def multiyear_save_charts(self):
         from PySide6.QtGui import QPainter, QPixmap
         d = self.multiyear_dialog
-        if d is None or self._multiyear_result is None:
+        if d is None or self._my_need_single("Save charts"):
             return
         path, _ = QFileDialog.getSaveFileName(self, "Save charts", "multiyear.png", "PNG (*.png)")
         if not path:
             return
+        from PySide6.QtGui import QColor
+        from ui.chart_theme import colors
         a, b = d.trend.grab(), d.prof.grab()
         out = QPixmap(max(a.width(), b.width()), a.height() + b.height())
-        out.fill()
+        out.fill(QColor(colors()["surface"]))
         p = QPainter(out)
         p.drawPixmap(0, 0, a)
         p.drawPixmap(0, a.height(), b)

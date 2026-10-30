@@ -159,6 +159,8 @@ def _interp_runs(ch_src, z_src, ch):
 def seabed_along(obj, route, st, width=0.5, stat="median"):
     """Seabed elevation at the stations from a DEM, a TIN or a point cloud (corridor ± width)."""
     ch = st["ch"]
+    if hasattr(obj, "sample_xy"):                   # raster file read only now (core.raster_source)
+        return obj.sample_xy(st["x"], st["y"])
     if isinstance(obj, Dem):
         from core.filters import surface_z
         return surface_z(obj, st["x"], st["y"])

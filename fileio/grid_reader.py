@@ -18,13 +18,29 @@ def is_esri_ascii(path):
         return False
 
 
-def read_raster(path, progress=None):
-    """GeoTIFF / ESRI ASCII (any GDAL raster). Returns Dem with meta['crs'] (pyproj CRS or None)."""
+def raster_size(path):
+    """(width, height) without reading the data."""
     import rasterio
-    from rasterio.warp import Resampling, calculate_default_transform, reproject
     with rasterio.open(path) as ds:
-        z = ds.read(1, masked=True).astype(np.float32).filled(np.nan)
-        tr = ds.transform
+        return ds.width, ds.height
+
+
+def read_raster(path, progress=None, factor=1):
+    """GeoTIFF / ESRI ASCII (any GDAL raster). Returns Dem with meta['crs'] (pyproj CRS or None).
+    factor > 1: read at 1/factor resolution (cell averages) — for very large rasters."""
+    import rasterio
+    from rasterio.enums import Resampling as _RS
+    from rasterio.warp import Resampling, calculate_default_transform, reproject
+    factor = max(int(factor or 1), 1)
+    with rasterio.open(path) as ds:
+        if factor > 1:
+            h_, w_ = max(ds.height // factor, 1), max(ds.width // factor, 1)
+            z = ds.read(1, masked=True, out_dtype="float32", out_shape=(h_, w_), resampling=_RS.average)
+            tr = ds.transform * ds.transform.scale(ds.width / w_, ds.height / h_)
+        else:
+            z = ds.read(1, masked=True, out_dtype="float32")       # no float64 / extra copies
+            tr = ds.transform
+        z = z.filled(np.nan) if np.ma.isMaskedArray(z) else np.asarray(z, np.float32)
         src_crs = ds.crs
         nodata = ds.nodata
         if nodata is not None:
@@ -46,7 +62,8 @@ def read_raster(path, progress=None):
         except Exception:
             crs = None
     dem = Dem(z, float(tr.c), float(tr.f), float(abs(tr.a)), "imported",
-              meta={"crs": crs, "path": path, "source": os.path.basename(path)})
+              meta={"crs": crs, "path": path, "source": os.path.basename(path),
+                    **({"factor": factor} if factor > 1 else {})})
     if progress:
         progress(1.0)
     return dem

@@ -310,7 +310,12 @@ class DataCard(Card):
         chk.toggled.connect(lambda on, i=ds.id: cb.ds_visible(i, on))
         top.addWidget(chk, 1)
         kind = QLabel(KIND_LABEL[ds.kind])
-        kind.setStyleSheet(f"color:{KIND_COLOR[ds.kind]}; border:1px solid {KIND_COLOR[ds.kind]}; "
+        kc = KIND_COLOR[ds.kind]
+        if ds.kind in ("route", "vector", "structure"):          # the chip shows the layer's own colour
+            from core import layer_style as _ls
+            kc = _ls.color_of(ds.kind, ds.style, ds.obj)
+            kind.setToolTip("Colour & text label: ⋯ menu")
+        kind.setStyleSheet(f"color:{kc}; border:1px solid {kc}; "
                            f"border-radius:7px; padding:0 6px; font-size:10px; font-weight:700")
         top.addWidget(kind)
         if outdated:
@@ -364,6 +369,8 @@ class DataCard(Card):
             a.triggered.connect(lambda _=False, i=ds.id: cb.ds_flip_z(i))
         if ds.kind in ("points", "grid", "tin"):
             m.addAction("Survey date…", lambda i=ds.id: cb.ds_set_date(i))
+        if ds.kind in ("route", "vector", "structure"):
+            m.addAction("Colour && Text Label…", lambda i=ds.id: cb.ds_style(i))
         if ds.kind == "mesh":
             m.addAction("Mesh / model information…", lambda i=ds.id: cb.mesh_info(i))
         if ds.kind in ("tin", "mesh"):

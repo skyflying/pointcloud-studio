@@ -40,6 +40,7 @@ class Dataset:
     z_flipped: bool = False         # Z sign flipped after loading (file stored depths, positive down)
     survey_date: str | None = None  # 'YYYY-MM-DD' — epochs for scour / sand-wave / multi-year analyses
     simulated: bool = False         # a modelled (predicted) seabed rather than a survey
+    style: dict = field(default_factory=dict)   # routes / vector layers / structures: {"color", "label", "kp"}
     id: int = 0
     # editing state (point clouds only)
     sel: Selection | None = None

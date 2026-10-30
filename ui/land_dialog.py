@@ -79,6 +79,11 @@ class LandDialog(QDialog):
         self.chart = KPChart()
         self.chart.setVisible(False)
         v.addWidget(self.chart)
+        from ui.chart_theme import selector as _chart_bg
+        _cbr = QHBoxLayout()
+        _cbr.addStretch()
+        _cbr.addWidget(_chart_bg(self))
+        v.addLayout(_cbr)
         self.cmb_table = QComboBox()
         self.cmb_table.currentIndexChanged.connect(self._fill_table)
         v.addWidget(self.cmb_table)

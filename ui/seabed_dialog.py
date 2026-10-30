@@ -193,6 +193,11 @@ class SeabedDialog(QDialog):
         v.addWidget(self.map)
         self.chart = KPChart()
         v.addWidget(self.chart)
+        from ui.chart_theme import selector as _chart_bg
+        _cbr = QHBoxLayout()
+        _cbr.addStretch()
+        _cbr.addWidget(_chart_bg(self))
+        v.addLayout(_cbr)
         trow = QHBoxLayout()
         self.cmb_table = QComboBox()
         self.cmb_table.currentIndexChanged.connect(self._fill_table)

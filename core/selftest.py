@@ -525,7 +525,36 @@ def run(app=None):
                          dict(required=1.0, reburial_to=1.5, mode="cumulative"))
         sh = mb.workbook_sheets(b, {"mode": "cumulative"})
         assert len(b["items"]) == 4 and len(sh["Summary"]) == 4 and len(sh["Points"]) > 2000, sh.keys()
-        return " · batch: 3 segments stitched into 1000 m, 4 items, workbook sheets"
+        # members 50 m apart: the gap is joined without a cable level and not assessed
+        a2 = Route("A", segs[0].xy, z=np.full(len(segs[0].xy), -21.5), meta={"attributes": {"string": "S2"}})
+        c2 = Route("C", segs[2].xy, z=np.full(len(segs[2].xy), -21.5), meta={"attributes": {"string": "S2"}})
+        g = mb.stitch([a2, c2], "string")[0]
+        assert g.meta["gaps"] and abs(g.meta["gaps"][0] - 350.0) < 1.0, g.meta
+        gb = mb.run_batch([(g.name, "string", g)], [{"name": "2025", "year": 2025, "obj": sea(0)}],
+                          dict(required=1.0))["items"][0]["row"]
+        assert abs(gb["length_m"] - 650.0) < 3.0 and gb["gaps_not_assessed_m"] > 340, gb
+        # reference rules (original burial-check script): peak shaving = converged iterative sweeps
+        from core import multiyear
+        from core.multiyear import peak_shave
+        chx = np.arange(0.0, 400.0, 1.0)
+        zz = -40 + 3 * np.sin(chx / 15.0) + np.where((chx > 200) & (chx < 204), 6.0, 0.0)
+        it = zz.copy()
+        k_ = np.tan(np.radians(15.0))
+        for _ in range(60):
+            for i in range(1, len(it)):
+                it[i] = min(it[i], it[i - 1] + k_)
+            for i in range(len(it) - 2, -1, -1):
+                it[i] = min(it[i], it[i + 1] + k_)
+        assert np.abs(peak_shave(zz, chx, 15.0) - it).max() < 1e-9
+        rx = Route("R", np.c_[np.linspace(0, 1000, 11), np.zeros(11)], z=np.full(11, -21.5))
+        yrs = [{"name": "a", "year": 2025, "obj": sea(0)}, {"name": "b", "year": 2026, "obj": sea(0)}]
+        rr = multiyear.assess(rx, yrs, mode="cumulative", trigger="exposed", min_run=7.0, settle_short=True,
+                              action="lower_by", lower_by=1.5, cost_per_m=10.0, discount_rate=0.1)
+        ss = rr["summary"]
+        assert ss["total_cost"] is not None and abs(ss["total_cost_pv"] - sum(
+            r_.get("cost", 0) / 1.1 ** (r_["year"] - 2025) for r_ in rr["table"])) < 1e-6, ss
+        return (" · batch: 3 segments stitched into 1000 m, 4 items, workbook sheets, 350 m gap not assessed · "
+                "reference rules (peak shaving, exposure ≥ 7 m, settle, lower-by, discounted cost)")
 
     def multiyear_check():
         """Seabed dropping 0.3 m/yr over 300 m, cable 1.5 m below the original seabed, required cover 1.0 m:

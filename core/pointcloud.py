@@ -95,7 +95,7 @@ class PointCloud:
         cls = self.attrs["Classification"]
         cls[idx] = values
         las = self.source.get("las")
-        if las is not None:
+        if las is not None and hasattr(las, "points"):    # records in memory (small files): keep them in step
             arr = np.array(las.classification)
             arr[idx] = values
             las.classification = arr

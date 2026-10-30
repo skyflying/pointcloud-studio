@@ -110,7 +110,7 @@ class RouteImportDialog(QDialog):
                     g.addWidget(w2, r_, 2)
             v.addLayout(g)
             self.lst = CheckList()
-            self.lst.itemChanged.connect(self._update)
+            self.lst.itemChanged.connect(self._on_tick)
             v.addWidget(check_bar(self.lst, "Import:"))
             v.addWidget(self.lst, 1)
             self._unchecked = set()
@@ -345,7 +345,17 @@ class RouteImportDialog(QDialog):
             o = dict(zo, name=self.f_name.currentData(), kp=self.f_kp.currentData(), z=self.f_z.currentData(),
                      z_depth=self.f_zdepth.isChecked(), dob=self.f_dob.currentData(), seabed=self.f_sb.currentData(),
                      seabed_depth=self.f_sbdepth.isChecked())
+            if getattr(self, "_ticking", False) and getattr(self, "_all_routes", None) is not None \
+                    and len(self._all_routes) == self.lst.count():
+                # only a tick changed: keep the list as it is (rebuilding it here would delete the item Qt is
+                # still handling → "Internal C++ object already deleted" / crash)
+                out = [r for k, r in enumerate(self._all_routes) if self.lst.item(k).checkState() == Qt.Checked]
+                for r in out:
+                    if r.kp is None and not self.f_kp.currentData():
+                        r.start_kp = self.sp_kp0.value()
+                return out
             routes = rr.routes_from_features(self.feats, self.base, o)
+            self._all_routes = routes
             # remember unticked routes by name across rebuilds
             for k in range(self.lst.count()):
                 it = self.lst.item(k)
@@ -374,6 +384,13 @@ class RouteImportDialog(QDialog):
                                                   comment=self.ed_comment.text().strip(),
                                                   sort_kp=self.chk_sortkp.isChecked()))
         return routes
+
+    def _on_tick(self, *_):
+        self._ticking = True
+        try:
+            self._update()
+        finally:
+            self._ticking = False
 
     def _update(self, *_):
         try:

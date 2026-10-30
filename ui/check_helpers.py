@@ -113,10 +113,29 @@ def check_bar(view, label=None):
     h.addWidget(count)
     h.addStretch()
 
+    alive = {"on": True}
+
     def refresh(*_):
-        items = [i for i in view.check_items() if i is not None and i.flags() & Qt.ItemIsUserCheckable]
-        n = sum(1 for i in items if i.checkState() == Qt.Checked)
-        count.setText(f"{n} of {len(items)} selected")
+        # The model can still emit (rowsRemoved, modelReset …) while the list or the dialog holding it is being
+        # destroyed — e.g. when a dialog rebuilds its lists after a route is imported. Never touch dead widgets.
+        if not alive["on"]:
+            return
+        try:
+            from shiboken6 import isValid
+            if not (isValid(view) and isValid(count)):
+                alive["on"] = False
+                return
+            items = [i for i in view.check_items() if i is not None and i.flags() & Qt.ItemIsUserCheckable]
+            n = sum(1 for i in items if i.checkState() == Qt.Checked)
+            count.setText(f"{n} of {len(items)} selected")
+        except RuntimeError:                       # deleted between the check and the call
+            alive["on"] = False
+
+    def _dead(*_):
+        alive["on"] = False
+
+    view.destroyed.connect(_dead)
+    count.destroyed.connect(_dead)
     m = view.model()
     for sig in (m.dataChanged, m.rowsInserted, m.rowsRemoved, m.modelReset, m.layoutChanged):
         sig.connect(refresh)

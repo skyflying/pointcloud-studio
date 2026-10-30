@@ -516,6 +516,25 @@ class MainWindow(S44Mixin, ReconstructMixin, MultiYearMixin, LandMixin, SeabedMi
         self._m_view.addAction(self.act_nav)
         from PySide6.QtGui import QActionGroup
         from core.route import DIST_LABEL
+        from ui import chart_theme
+        m_cb = self._m_view.addMenu("Chart Background")
+        grp_cb = QActionGroup(self)
+        for key, lab in chart_theme.LABELS.items():
+            a = QAction(lab + (" (as the program)" if key == "dark" else " (reports)"), self, checkable=True)
+            a.setChecked(chart_theme.current() == key)
+            a.triggered.connect(lambda _=False, k=key: chart_theme.set_current(k))
+            grp_cb.addAction(a)
+            m_cb.addAction(a)
+        self._chart_bg_actions = {k: a for k, a in zip(chart_theme.LABELS, grp_cb.actions())}
+
+        class _MenuSync(QWidget):
+            def on_chart_theme(inner, name):
+                act = self._chart_bg_actions.get(name)
+                if act is not None:
+                    act.setChecked(True)
+        self._chart_bg_sync = _MenuSync(self)
+        self._chart_bg_sync.hide()
+        chart_theme.register(self._chart_bg_sync)
         m_dist = self._m_view.addMenu("Distance Label")
         grp = QActionGroup(self)
         saved = QSettings("PointCloudStudio", "PointCloudStudio").value("ui/dist_label", "KP")

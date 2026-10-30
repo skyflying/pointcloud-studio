@@ -360,7 +360,9 @@ class SeabedMixin:
                 from PySide6.QtGui import QPainter, QPixmap
                 m = self.seabed_dialog.map.grab()
                 out = QPixmap(m.width() + pm.width(), max(m.height(), pm.height()))
-                out.fill()
+                from PySide6.QtGui import QColor
+                from ui.chart_theme import colors
+                out.fill(QColor(colors()["surface"]))
                 p = QPainter(out)
                 p.drawPixmap(0, 0, m)
                 p.drawPixmap(m.width(), 0, pm)

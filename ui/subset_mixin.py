@@ -455,9 +455,9 @@ class RouteMixin:
         return first
 
     def _show_routes(self):
-        self.viewer.set_routes([d.obj for d in self.project.of_kind("route", visible_only=True)])
-        self.viewer.set_structures([d.obj for d in self.project.of_kind("structure", visible_only=True)])
-        self.viewer.set_vectors([d.obj for d in self.project.of_kind("vector", visible_only=True)])
+        self.viewer.set_routes([(d.obj, d.style) for d in self.project.of_kind("route", visible_only=True)])
+        self.viewer.set_structures([(d.obj, d.style) for d in self.project.of_kind("structure", visible_only=True)])
+        self.viewer.set_vectors([(d.obj, d.style) for d in self.project.of_kind("vector", visible_only=True)])
 
     def route_section(self, ds_id):
         from core import profile as prof

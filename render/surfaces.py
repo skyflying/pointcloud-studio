@@ -22,19 +22,32 @@ def mesh_mesh(m, offset):
     return (m.vertices - offset).astype(np.float32), m.faces, m.vertices[:, 2].astype(np.float32), rgb
 
 
-def dem_mesh(dem, offset):
-    nr, nc = dem.z.shape
+MAX_DEM_DISPLAY_CELLS = 4_000_000       # display only: larger DEMs are drawn with every n-th cell
+
+
+def dem_stride(dem, max_cells=MAX_DEM_DISPLAY_CELLS):
+    nr0, nc0 = dem.z.shape
+    return int(np.ceil(np.sqrt(nr0 * nc0 / float(max_cells)))) if nr0 * nc0 > max_cells else 1
+
+
+def dem_mesh(dem, offset, max_cells=MAX_DEM_DISPLAY_CELLS):
+    """Display mesh of a DEM. Grids above max_cells are drawn decimated (every s-th row / column) — the
+    3D view needs ~40 bytes per drawn cell; analyses always use the full grid."""
+    s_ = dem_stride(dem, max_cells)
     xs, ys = dem.centers()
+    xs, ys = xs[::s_], ys[::s_]
+    z = dem.z[::s_, ::s_]
+    nr, nc = z.shape
     X, Y = np.meshgrid(xs, ys)
     if dem.has_true_position:              # surface passes through the true sounding positions
-        real = np.isfinite(dem.tx)
-        X = np.where(real, dem.tx, X)
-        Y = np.where(real, dem.ty, Y)
-    z = dem.z
+        tx, ty = dem.tx[::s_, ::s_], dem.ty[::s_, ::s_]
+        real = np.isfinite(tx)
+        X = np.where(real, tx, X)
+        Y = np.where(real, ty, Y)
     valid = np.isfinite(z)
     zf = np.where(valid, z, np.nanmean(z) if valid.any() else 0.0)
     V = np.column_stack([X.ravel() - offset[0], Y.ravel() - offset[1], zf.ravel() - offset[2]]).astype(np.float32)
-    ids = np.arange(nr * nc).reshape(nr, nc)
+    ids = np.arange(nr * nc, dtype=np.int32).reshape(nr, nc)
     a, b, c, d = ids[:-1, :-1], ids[:-1, 1:], ids[1:, :-1], ids[1:, 1:]
     va, vb, vc, vd = valid[:-1, :-1], valid[:-1, 1:], valid[1:, :-1], valid[1:, 1:]
     t1 = np.column_stack([a[va & vc & vb], c[va & vc & vb], b[va & vc & vb]])
@@ -47,7 +60,7 @@ def hillshade(V, F, z_scale, two_sided=False):
     """Per-vertex shade factor (ambient … 1) using area-weighted vertex normals.
     two_sided: 3D meshes (walls, overhangs, closed objects) — normals keep their direction and both sides
     are lit, instead of all normals pointing up as for terrain."""
-    P = V.astype(np.float64)
+    P = V.astype(np.float32)                 # float32 halves the temporary memory of large meshes
     P[:, 2] *= z_scale
     e1 = P[F[:, 1]] - P[F[:, 0]]
     e2 = P[F[:, 2]] - P[F[:, 0]]

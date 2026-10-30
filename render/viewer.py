@@ -129,6 +129,11 @@ class PointCloudViewer:
         self.vec_lines.set_gl_state("translucent", depth_test=False)
         self.vec_lines.order = 4
         self.vec_lines.visible = False
+        self.vec_text = scene.visuals.Text(parent=self.view.scene, color=(0.78, 0.49, 1.0, 1.0), font_size=9,
+                                           anchor_x="left", anchor_y="bottom")
+        self.vec_text.set_gl_state("translucent", depth_test=False)
+        self.vec_text.order = 6
+        self.vec_text.visible = False
         # analysis results along routes (DoB / free spans / berm): coloured polylines + labels
         self.ana_lines = scene.visuals.Line(parent=self.view.scene, method="gl", width=5.0)
         self.ana_lines.set_gl_state("translucent", depth_test=False)
@@ -483,7 +488,10 @@ class PointCloudViewer:
             layer.two_sided = obj.__class__.__name__ == "Mesh" and obj.meta.get("method") != "delaunay25d"
             if getattr(obj, "cvals", None) is not None:
                 from render.colormap import ColorScale
-                layer.cvals = obj.cvals.ravel().astype(np.float32)
+                from render.surfaces import dem_stride
+                st_ = dem_stride(obj) if not isinstance(obj, Tin) and obj.__class__.__name__ != "Mesh" else 1
+                cv = obj.cvals[::st_, ::st_] if st_ > 1 and np.ndim(obj.cvals) == 2 else obj.cvals
+                layer.cvals = np.asarray(cv).ravel().astype(np.float32)
                 lo, hi = obj.crange
                 layer.own_scale = ColorScale(palette=getattr(obj, "cpalette", "Diverging"), vmin=lo, vmax=hi,
                                              amin=lo, amax=hi, auto=False)
@@ -614,7 +622,7 @@ class PointCloudViewer:
         for m in ([self.markers, self.trash_markers, self.sel_markers, self.sec_lines, self.sec_verts]
                   + [l.mesh for l in self.surfaces.values()] + [r["markers"] for r in self.refs.values()]
                   + list(self.contours.values()) + list(self.contour_labels.values())
-                  + [self.route_lines, self.route_text, self.ana_lines, self.ana_text, self.str_lines,
+                  + [self.route_lines, self.route_text, self.ana_lines, self.ana_text, self.str_lines, self.vec_text,
                      self.str_text, self.vec_lines]):
             m.transform = STTransform(scale=(1.0, 1.0, self.z_scale))
         for layer in self.surfaces.values():
@@ -921,116 +929,202 @@ class PointCloudViewer:
         out[1::2] = loc[first + 1]
         return out
 
+    @staticmethod
+    def _styled(items, kind):
+        """[(obj, style)] from [obj] or [(obj, style)]."""
+        out = []
+        for it in items:
+            if isinstance(it, tuple):
+                out.append((it[0], it[1] or {}))
+            else:
+                out.append((it, {}))
+        return out
+
     def set_routes(self, routes):
-        """routes: list of Route objects (visible ones). Cyan polylines draped on the terrain + KP labels at
-        round values; cable profiles (routes with cable-top Z) are drawn orange at their own level."""
+        """routes: Route objects or (Route, style) of the visible routes. Polylines draped on the terrain (cable
+        profiles with cable-top Z at their own level) in the layer's colour; KP labels at round values and the
+        chosen text field (default the name) — see core.layer_style."""
+        from core import layer_style as ls
         from core.route import dist_label
         from render.colormap import nice_ticks
-        if self.origin is None or not routes:
+        from vispy.color import Color
+        items = self._styled(routes, "route")
+        if self.origin is None or not items:
             self.route_lines.visible = self.route_text.visible = False
             self.canvas.update()
             return
         off = self.origin[:2]
-        pos, cols, labels, lpos, lz = [], [], [], [], []
-        drape = []
-        for r in routes:
+        pos, cols, labels, lpos, lz, lcol = [], [], [], [], [], []
+        for r, st in items:
+            rgba = np.array(Color(ls.color_of("route", st, r)).rgba, np.float32)
             if r.z is not None:
                 q = self._z_pairs(r.xy, r.z)
-                pos.append(q)
-                cols.append(np.tile((1.0, 0.62, 0.26, 1.0), (len(q), 1)))
             else:
-                for a, b in zip(r.xy[:-1], r.xy[1:]):
-                    drape.extend([a, b])
-            k0, k1 = r.kp_range()
-            ticks, dec = nice_ticks(k0, k1, target=8)
-            for k in ticks:
-                c = r.chainage_at_kp(k)
-                lpos.append(r.xy_at(c))
-                lz.append(np.interp(c, r.cum, r.z) if r.z is not None else np.nan)
-                labels.append(f"{dist_label()} {k:.{max(dec, 1)}f}")
-            labels.append(r.name)
-            lpos.append(r.xy[0])
-            lz.append(r.z[0] if r.z is not None else np.nan)
-        if drape:
-            q = self._drape_pairs(drape)
-            pos.append(q)
-            cols.append(np.tile((0.30, 0.79, 0.94, 1.0), (len(q), 1)))
+                d = []
+                for a_, b_ in zip(r.xy[:-1], r.xy[1:]):
+                    d.extend([a_, b_])
+                q = self._drape_pairs(d) if d else np.empty((0, 3))
+            if len(q):
+                pos.append(q)
+                cols.append(np.tile(rgba, (len(q), 1)))
+            if st.get("kp", True):
+                k0, k1 = r.kp_range()
+                ticks, dec = nice_ticks(k0, k1, target=8)
+                for k in ticks:
+                    c = r.chainage_at_kp(k)
+                    lpos.append(r.xy_at(c))
+                    lz.append(np.interp(c, r.cum, r.z) if r.z is not None else np.nan)
+                    labels.append(f"{dist_label()} {k:.{max(dec, 1)}f}")
+                    lcol.append(rgba)
+            key = ls.label_key("route", st)
+            if key is not None:
+                txt = r.name if key == "__name__" else ls.fmt(((r.meta or {}).get("attributes") or {}).get(key))
+                if txt:
+                    labels.append(txt)
+                    lpos.append(r.xy[0])
+                    lz.append(r.z[0] if r.z is not None else np.nan)
+                    lcol.append(rgba)
         tr = STTransform(scale=(1.0, 1.0, self.z_scale))
-        self.route_lines.set_data(pos=np.vstack(pos).astype(np.float32), color=np.vstack(cols).astype(np.float32),
-                                  connect="segments")
-        self.route_lines.transform = tr
-        self.route_lines.visible = True
-        L = np.asarray(lpos, float)
-        lx, ly = L[:, 0] - off[0], L[:, 1] - off[1]
-        z = np.asarray(lz, float) - self.origin[2]
-        z = np.where(np.isfinite(z), z, self._drape_z(lx, ly))
-        self.route_text.text = labels
-        self.route_text.pos = np.column_stack([lx, ly, z]).astype(np.float32)
-        self.route_text.transform = tr
-        self.route_text.visible = True
+        if pos:
+            self.route_lines.set_data(pos=np.vstack(pos).astype(np.float32), color=np.vstack(cols).astype(np.float32),
+                                      connect="segments")
+            self.route_lines.transform = tr
+            self.route_lines.visible = True
+        else:
+            self.route_lines.visible = False
+        if labels:
+            L = np.asarray(lpos, float)
+            lx, ly = L[:, 0] - off[0], L[:, 1] - off[1]
+            z = np.asarray(lz, float) - self.origin[2]
+            z = np.where(np.isfinite(z), z, self._drape_z(lx, ly))
+            self.route_text.text = labels
+            self.route_text.color = np.asarray(lcol, np.float32)
+            self.route_text.pos = np.column_stack([lx, ly, z]).astype(np.float32)
+            self.route_text.transform = tr
+            self.route_text.visible = True
+        else:
+            self.route_text.visible = False
         self.canvas.update()
 
     def set_structures(self, groups):
-        """groups: list of Structures (visible ones) → orange circles (foundation diameter, at least 3 m drawn)
-        on the terrain, with names."""
-        if self.origin is None or not groups or not any(len(g) for g in groups):
+        """groups: Structures or (Structures, style) of the visible groups → circles (foundation diameter, at
+        least 3 m drawn) on the terrain in the layer's colour, with the chosen text (default the name)."""
+        from core import layer_style as ls
+        from vispy.color import Color
+        items = self._styled(groups, "structure")
+        if self.origin is None or not items or not any(len(g) for g, _ in items):
             self.str_lines.visible = self.str_text.visible = False
             self.canvas.update()
             return
         t = np.linspace(0, 2 * np.pi, 33)
-        pos, labels, lp = [], [], []
+        pos, cols, labels, lp, lcol = [], [], [], [], []
         o = self.origin
-        for g in groups:
-            for name, (x, y), d in zip(g.names, g.xy, g.diameter):
+        for g, st in items:
+            rgba = np.array(Color(ls.color_of("structure", st)).rgba, np.float32)
+            key = ls.label_key("structure", st)
+            attrs = (g.meta or {}).get("attributes") if isinstance((g.meta or {}).get("attributes"), list) else None
+            for k, (name, (x, y), d) in enumerate(zip(g.names, g.xy, g.diameter)):
                 r = max(d / 2.0, 1.5)
                 lx, ly = x - o[0] + r * np.cos(t), y - o[1] + r * np.sin(t)
                 z = self._drape_z(lx, ly)
                 q = np.column_stack([lx, ly, z])
-                pos.append(np.repeat(q, 2, axis=0)[1:-1])
-                labels.append(name)
-                lp.append((x - o[0] + r, y - o[1], float(np.nanmax(z))))
+                seg = np.repeat(q, 2, axis=0)[1:-1]
+                pos.append(seg)
+                cols.append(np.tile(rgba, (len(seg), 1)))
+                if key is not None:
+                    txt = (name if key == "__name__" else ls.fmt(float(d)) + " m" if key == "__diameter__"
+                           else ls.fmt(attrs[k].get(key)) if attrs and k < len(attrs) else "")
+                    if txt:
+                        labels.append(txt)
+                        lp.append((x - o[0] + r, y - o[1], float(np.nanmax(z))))
+                        lcol.append(rgba)
         tr = STTransform(scale=(1.0, 1.0, self.z_scale))
-        self.str_lines.set_data(pos=np.vstack(pos).astype(np.float32), color=(1.0, 0.62, 0.26, 1.0),
+        self.str_lines.set_data(pos=np.vstack(pos).astype(np.float32), color=np.vstack(cols).astype(np.float32),
                                 connect="segments")
         self.str_lines.transform = tr
         self.str_lines.visible = True
-        self.str_text.text = labels
-        self.str_text.pos = np.asarray(lp, np.float32)
-        self.str_text.transform = tr
-        self.str_text.visible = True
+        if labels:
+            self.str_text.text = labels
+            self.str_text.color = np.asarray(lcol, np.float32)
+            self.str_text.pos = np.asarray(lp, np.float32)
+            self.str_text.transform = tr
+            self.str_text.visible = True
+        else:
+            self.str_text.visible = False
         self.canvas.update()
 
-    def set_vectors(self, layers, color=(0.78, 0.49, 1.0, 0.95)):
-        """layers: VectorLayer objects → lines and polygon outlines (3D lines at their Z, others draped),
-        points as small crosses."""
-        if self.origin is None or not layers or not any(len(l) for l in layers):
-            self.vec_lines.visible = False
+    def set_vectors(self, layers, color=None):
+        """layers: VectorLayer or (VectorLayer, style) → lines and polygon outlines (3D lines at their Z, others
+        draped), points as small crosses, in each layer's colour; optional text from one attribute."""
+        from core import layer_style as ls
+        from vispy.color import Color
+        items = self._styled(layers, "vector")
+        if self.origin is None or not items or not any(len(l) for l, _ in items):
+            self.vec_lines.visible = self.vec_text.visible = False
             self.canvas.update()
             return
-        items = []
+        segs, cols, labels, lp, lz, lcol = [], [], [], [], [], []
         span = float(np.max(self.bbox[1][:2] - self.bbox[0][:2])) if self.bbox is not None else 100.0
         arm = max(span / 400.0, 0.5)
-        for lay in layers:
+        for lay, st in items:
+            rgba = np.array(Color(st.get("color") or (color if color is not None else
+                                                      ls.color_of("vector", st))).rgba, np.float32)
+            key = ls.label_key("vector", st)
             for f in lay.features:
+                anchor = None
                 for p in f["parts"]:
+                    p = np.asarray(p, float)
                     if f["type"] == "Point":
                         x, y = p[0, 0], p[0, 1]
                         z = p[0, 2] if p.shape[1] >= 3 and abs(p[0, 2]) > 1e-9 else np.nan
-                        items.append((np.array([(x - arm, y), (x + arm, y)]), np.full(2, z)))
-                        items.append((np.array([(x, y - arm), (x, y + arm)]), np.full(2, z)))
+                        for q in (np.array([(x - arm, y), (x + arm, y)]), np.array([(x, y - arm), (x, y + arm)])):
+                            segs.append((q, np.full(2, z)))
+                            cols.append(rgba)
+                        anchor = anchor or (x + arm, y, z)
                         continue
                     q = p if f["type"] != "Polygon" or np.array_equal(p[0, :2], p[-1, :2]) else np.vstack([p, p[:1]])
                     if len(q) < 2:
                         continue
                     z = q[:, 2] if q.shape[1] >= 3 and np.any(np.abs(q[:, 2]) > 1e-9) else np.full(len(q), np.nan)
-                    items.append((q[:, :2], z))
-        if not items:
-            self.vec_lines.visible = False
+                    segs.append((q[:, :2], z))
+                    cols.append(rgba)
+                    if anchor is None:
+                        if f["type"] == "Polygon":
+                            c = q[:-1, :2].mean(axis=0)
+                            anchor = (c[0], c[1], float(np.nanmean(z)) if np.isfinite(z).any() else np.nan)
+                        else:
+                            m = len(q) // 2
+                            anchor = (q[m, 0], q[m, 1], z[m])
+                if key is not None and anchor is not None:
+                    txt = ls.fmt((f.get("attrs") or {}).get(key))
+                    if txt:
+                        labels.append(txt)
+                        lp.append(anchor[:2])
+                        lz.append(anchor[2])
+                        lcol.append(rgba)
+        if not segs:
+            self.vec_lines.visible = self.vec_text.visible = False
             self.canvas.update()
             return
-        self.vec_lines.set_data(pos=self._z_pairs_many(items).astype(np.float32), color=color, connect="segments")
-        self.vec_lines.transform = STTransform(scale=(1.0, 1.0, self.z_scale))
+        pos = self._z_pairs_many(segs)                       # one draping call for all features
+        npair = np.array([2 * (len(a) - 1) for a, _z in segs])
+        col = np.repeat(np.asarray(cols, np.float32), npair, axis=0)
+        tr = STTransform(scale=(1.0, 1.0, self.z_scale))
+        self.vec_lines.set_data(pos=pos.astype(np.float32), color=col, connect="segments")
+        self.vec_lines.transform = tr
         self.vec_lines.visible = True
+        if labels:
+            L = np.asarray(lp, float)
+            lx, ly = L[:, 0] - self.origin[0], L[:, 1] - self.origin[1]
+            z = np.asarray(lz, float) - self.origin[2]
+            z = np.where(np.isfinite(z), z, self._drape_z(lx, ly))
+            self.vec_text.text = labels
+            self.vec_text.color = np.asarray(lcol, np.float32)
+            self.vec_text.pos = np.column_stack([lx, ly, z]).astype(np.float32)
+            self.vec_text.transform = tr
+            self.vec_text.visible = True
+        else:
+            self.vec_text.visible = False
         self.canvas.update()
 
     def set_analysis_overlay(self, lines=(), labels=()):

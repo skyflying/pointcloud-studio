@@ -193,7 +193,10 @@ class ProjectMixin:
         if ext in LAS_EXT:
             fn, args, kw = read_las, (path,), {}
         elif ext in RASTER_EXT or (ext == ".asc" and is_esri_ascii(path)):
-            fn, args, kw = read_raster, (path,), {}
+            factor = self._ask_raster_factor(path)
+            if factor is None:
+                return self._next_in_queue()
+            fn, args, kw = read_raster, (path,), ({"factor": factor} if factor > 1 else {})
         elif ext in TEXT_EXT or ext == "":
             batch = getattr(self, "_batch_xyz", None)
             if batch is not None and batch.get("opts") is not None:
@@ -277,8 +280,11 @@ class ProjectMixin:
         elif src is not None and target is None and proj.datasets:
             note = " · project has no coordinate system: no reprojection applied"
 
+        opts_ = dict(p["opts"] or {})
+        if kind == "grid" and getattr(obj, "meta", {}).get("factor", 1) > 1:
+            opts_["factor"] = obj.meta["factor"]             # reduced-resolution load: the same when reopened
         ds = Dataset(name, kind, obj, p["path"], crs=target if target is not None else src, source_crs=src,
-                     import_opts=p["opts"])
+                     import_opts=opts_)
         first = not proj.datasets
         tag = getattr(self, "_year_tags", {}).pop(p["path"], None)
         if tag is not None:                          # batch import of yearly surfaces
@@ -516,6 +522,45 @@ class ProjectMixin:
         self._set_dirty(True)
         self.statusBar().showMessage(f"{ds.name}: Z sign flipped — values are now "
                                      f"{'elevations from depths' if ds.z_flipped else 'as in the file'}", 8000)
+
+    LARGE_RASTER_CELLS = 50_000_000
+
+    def _ask_raster_factor(self, path):
+        """Very large rasters: offer a reduced resolution (memory). Returns 1, 2, 4, 8 or None (cancel)."""
+        from PySide6.QtWidgets import QInputDialog
+        try:
+            from fileio.grid_reader import raster_size
+            w, h = raster_size(path)
+        except Exception:  # noqa: BLE001
+            return 1
+        n = w * h
+        if n <= self.LARGE_RASTER_CELLS:
+            return 1
+        opts = []
+        for f in (1, 2, 4, 8):
+            cells = (w // f) * (h // f)
+            opts.append(f"{'Full' if f == 1 else f'1/{f}'} resolution — {w // f:,} × {h // f:,} cells, "
+                        f"about {cells * 4 * 2.2 / 1e9:.1f} GB" + ("" if f == 1 else " (cell averages)"))
+        item, ok = QInputDialog.getItem(self, "Large raster", f"{os.path.basename(path)} has {n / 1e6:,.0f} million "
+                                        "cells. Load it at:", opts, 1, False)
+        if not ok:
+            return None
+        return (1, 2, 4, 8)[opts.index(item)]
+
+    def ds_style(self, ds_id):
+        """Colour and text label of a route / vector / structure layer."""
+        from PySide6.QtWidgets import QDialog
+        from ui.layer_style_dialog import LayerStyleDialog
+        ds = self.project.get(ds_id)
+        if ds is None:
+            return
+        dlg = LayerStyleDialog(ds, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        ds.style = dlg.style()
+        self._set_dirty(True)
+        self._show_routes()
+        self._refresh_data_card()
 
     # ---------- layer order ----------
     def _apply_layer_order(self):
@@ -806,7 +851,7 @@ def _load_project_sources(doc, project_path, sources, progress=None):
                 elif as_grid:
                     obj = read_xyz_grid(src_path, **opts)
                 else:
-                    obj = read_raster(src_path)
+                    obj = read_raster(src_path, factor=int((e.get("import_opts") or {}).get("factor", 1)))
                 if e.get("z_flipped"):                       # file stores depths: flip as when it was saved
                     if e["kind"] == "points":
                         obj.xyz[:, 2] *= -1.0
@@ -1014,7 +1059,8 @@ class ProjectFileMixin:
                          source_crs=crsmod.from_text(e.get("source_crs")), visible=e.get("visible", True),
                          opacity=e.get("opacity", 1.0), import_opts=e.get("import_opts") or {},
                          edit_version=e.get("edit_version", 0), z_flipped=bool(e.get("z_flipped", False)),
-                         survey_date=e.get("survey_date"), simulated=bool(e.get("simulated", False)))
+                         survey_date=e.get("survey_date"), simulated=bool(e.get("simulated", False)),
+                         style=dict(e.get("style") or {}))
             proj.add(ds)
             idmap[e["id"]] = ds.id
             if e.get("derived_from") is not None:

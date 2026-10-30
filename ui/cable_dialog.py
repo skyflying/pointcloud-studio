@@ -48,14 +48,18 @@ def _fmt(v, d=2):
 # ================================================================ KP chart
 class KPChart(QWidget):
     """Stacked panels sharing the KP axis.
-    panels: [{"lines": [(label, color, values)], "hlines": [(value, color, label)],
-              "bands": [(kp_from, kp_to, color)], "ylabel": str, "invert": bool}]"""
+    panels: [{"lines": [(label, color, values[, "dash"])], "hlines": [(value, color, label)],
+              "bands": [(kp_from, kp_to, color)], "fills": [(label, color, lower, upper)] (lower: value or array),
+              "bars": [(label, color, values)], "ylabel": str, "invert": bool}]
+    The legend of every panel is drawn above its frame (never over the data)."""
 
     def __init__(self):
         super().__init__()
         self.setMinimumHeight(300)
         self.kp = None
         self.panels = []
+        from ui import chart_theme
+        chart_theme.register(self)                 # repaint when the chart background is switched
 
     def set_data(self, kp, panels, xlabel=None, xdec=3):
         self.kp = np.asarray(kp, float) if kp is not None else None
@@ -66,9 +70,12 @@ class KPChart(QWidget):
 
     def paintEvent(self, _):
         from render.colormap import nice_ticks
+        from ui.chart_theme import adapt, colors
+        T = colors(getattr(self, "theme", None))
+        th = getattr(self, "theme", None)
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.fillRect(self.rect(), QColor(C["surface"]))
+        p.fillRect(self.rect(), QColor(T["surface"]))
         if self.kp is None or not self.panels or len(self.kp) < 2:
             p.end()
             return
@@ -96,7 +103,9 @@ class KPChart(QWidget):
             ylab = pan.get("ylabel", "")
             room = pw - fm.horizontalAdvance(ylab) - 16
             items, rows_, x_ = [], 0, 0.0
-            for ln in pan["lines"]:
+            legend = list(pan["lines"]) + [(lab_, col_) for lab_, col_, *_r in pan.get("fills", [])] + \
+                [(lab_, col_) for lab_, col_, *_r in pan.get("bars", [])]
+            for ln in legend:
                 if not ln[0]:
                     continue                                 # no legend entry (e.g. the dashed twin of a line)
                 wtxt = fm.horizontalAdvance("■ " + ln[0]) + 14
@@ -106,20 +115,30 @@ class KPChart(QWidget):
                 items.append((ln, x_, rows_))
                 x_ += wtxt
             hh = (rows_ + 1) * lh + 4
-            for ln, xo, ro in items:
-                p.setPen(QPen(QColor(ln[1]), 1))
-                p.drawText(QRectF(left + 2 + xo, y0 + ro * lh, room, lh), Qt.AlignLeft | Qt.AlignVCenter, "■ " + ln[0])
-            p.setPen(QPen(QColor(C["muted"]), 1))
+            sq = fm.horizontalAdvance("■ ")
+            for ln, xo, ro in items:                         # colour key, then the label in the text colour
+                p.setPen(QPen(adapt(ln[1], th), 1))
+                p.drawText(QRectF(left + 2 + xo, y0 + ro * lh, sq, lh), Qt.AlignLeft | Qt.AlignVCenter, "■")
+                p.setPen(QPen(QColor(T["text"]), 1))
+                p.drawText(QRectF(left + 2 + xo + sq, y0 + ro * lh, room, lh), Qt.AlignLeft | Qt.AlignVCenter,
+                           ln[0])
+            p.setPen(QPen(QColor(T["muted"]), 1))
             p.drawText(QRectF(left, y0, pw, lh), Qt.AlignRight | Qt.AlignVCenter, ylab)
             # ---- plot area
             py0, phh = y0 + hh, max(ph - hh, 10)
             rect = QRectF(left, py0, pw, phh)
-            p.fillRect(rect, QColor(C["bg"]))
+            p.fillRect(rect, QColor(T["bg"]))
             vals = [np.asarray(ln[2], float) for ln in pan["lines"]]
             hv = [np.array([h[0]], float) for h in pan.get("hlines", [])]
-            allv = np.concatenate([v[np.isfinite(v)] for v in vals + hv]) if vals or hv else np.empty(0)
+            extra = []
+            for _l, _c, lo_, up_ in pan.get("fills", []):
+                extra += [np.atleast_1d(np.asarray(lo_, float)), np.asarray(up_, float)]
+            for _l, _c, bv in pan.get("bars", []):
+                extra += [np.asarray(bv, float), np.array([0.0])]
+            allv = (np.concatenate([v[np.isfinite(v)] for v in vals + hv + extra]) if vals or hv or extra
+                    else np.empty(0))
             if len(allv) == 0:
-                p.setPen(QPen(QColor(C["border"]), 1))
+                p.setPen(QPen(QColor(T["border"]), 1))
                 p.drawRect(rect)
                 continue
             lo, hi = float(allv.min()), float(allv.max())
@@ -142,14 +161,43 @@ class KPChart(QWidget):
             if pan.get("ydec") is not None:                  # e.g. years / counts: whole numbers only
                 dec = pan["ydec"]
                 ticks = sorted({round(t_) for t_ in ticks})
-            grid = QColor(C["border"])
+            grid = QColor(T["border"])
             grid.setAlpha(110)
             for tv in ticks:
                 if lo <= tv <= hi:
                     p.setPen(QPen(grid, 1))
                     p.drawLine(QPointF(left, Y(tv)), QPointF(left + pw, Y(tv)))
+            xs_all = np.asarray(pan.get("x", self.kp), float)
+            for _lab, col, lo_, up_ in pan.get("fills", []):          # shaded areas (under the lines)
+                up_ = np.asarray(up_, float)
+                lo_ = np.broadcast_to(np.asarray(lo_, float), up_.shape)
+                c = QColor(adapt(col, th))
+                c.setAlpha(80)
+                p.setPen(Qt.NoPen)
+                p.setBrush(c)
+                okf = np.isfinite(up_) & np.isfinite(lo_)
+                d = np.diff(np.r_[0, okf.astype(np.int8), 0])
+                for i0, i1 in zip(np.flatnonzero(d == 1), np.flatnonzero(d == -1) - 1):
+                    path = QPainterPath(QPointF(X(xs_all[i0]), Y(lo_[i0])))
+                    for j in range(i0, i1 + 1):
+                        path.lineTo(QPointF(X(xs_all[j]), Y(up_[j])))
+                    for j in range(i1, i0 - 1, -1):
+                        path.lineTo(QPointF(X(xs_all[j]), Y(lo_[j])))
+                    p.drawPath(path)
+                p.setBrush(Qt.NoBrush)
+            for _lab, col, bv in pan.get("bars", []):                  # columns from 0 (counts along the cable)
+                bv = np.asarray(bv, float)
+                dx = float(np.median(np.abs(np.diff(xs_all)))) if len(xs_all) > 1 else 1.0
+                p.setPen(Qt.NoPen)
+                p.setBrush(adapt(col, th))
+                for xk, v in zip(xs_all, bv):
+                    if np.isfinite(v) and v > 0:
+                        xa, xb = X(xk - dx / 2), X(xk + dx / 2)
+                        ya, yb = Y(0.0), Y(v)
+                        p.drawRect(QRectF(min(xa, xb), min(ya, yb), max(abs(xb - xa), 1.0), abs(yb - ya)))
+                p.setBrush(Qt.NoBrush)
             for v_, col, _lab in pan.get("hlines", []):
-                p.setPen(QPen(QColor(col), 1, Qt.DashLine))
+                p.setPen(QPen(adapt(col, th), 1, Qt.DashLine))
                 p.drawLine(QPointF(left, Y(v_)), QPointF(left + pw, Y(v_)))
             for ln, vv in zip(pan["lines"], vals):
                 col = ln[1]
@@ -167,17 +215,17 @@ class KPChart(QWidget):
                     else:
                         path.moveTo(pt)
                         pen_down = True
-                p.setPen(QPen(QColor(col), 1.4, Qt.DashLine if dash else Qt.SolidLine))
+                p.setPen(QPen(adapt(col, th), 1.4, Qt.DashLine if dash else Qt.SolidLine))
                 p.drawPath(path)
                 if len(xs) <= 60:                            # few values (e.g. years): mark them
-                    p.setBrush(QColor(col))
+                    p.setBrush(adapt(col, th))
                     for k, z in zip(xs, vv):
                         if np.isfinite(z):
                             p.drawEllipse(QPointF(X(k), Y(z)), 2.6, 2.6)
                     p.setBrush(Qt.NoBrush)
             # reference-line labels: right end, on a background box, pushed apart when close
             used = []
-            back = QColor(C["bg"])
+            back = QColor(T["bg"])
             back.setAlpha(215)
             for v_, col, lab in sorted(pan.get("hlines", []), key=lambda h: Y(h[0])):
                 if not lab:
@@ -192,17 +240,17 @@ class KPChart(QWidget):
                 used.append(yy)
                 box = QRectF(left + pw - tw - 4, yy, tw, lh)
                 p.fillRect(box, back)
-                p.setPen(QPen(QColor(col), 1))
+                p.setPen(QPen(adapt(col, th), 1))
                 p.drawText(box, Qt.AlignCenter, lab)
             p.restore()
-            p.setPen(QPen(QColor(C["border"]), 1))
+            p.setPen(QPen(QColor(T["border"]), 1))
             p.drawRect(rect)
-            p.setPen(QPen(QColor(C["muted"]), 1))
+            p.setPen(QPen(QColor(T["muted"]), 1))
             for tv in ticks:
                 if lo <= tv <= hi:
                     p.drawText(QRectF(0, Y(tv) - lh / 2, left - 6, lh), Qt.AlignRight | Qt.AlignVCenter, f"{tv:.{dec}f}")
         # ---- x axis
-        p.setPen(QPen(QColor(C["muted"]), 1))
+        p.setPen(QPen(QColor(T["muted"]), 1))
         xd = getattr(self, "xdec", 3)
         xt, xdec = nice_ticks(k0, k1, target=7)
         for t in xt:
@@ -270,6 +318,11 @@ class CableDialog(QDialog):
         v.addWidget(self.lbl_sum)
         self.chart = KPChart()
         v.addWidget(self.chart)
+        from ui.chart_theme import selector as _chart_bg
+        _cbr = QHBoxLayout()
+        _cbr.addStretch()
+        _cbr.addWidget(_chart_bg(self))
+        v.addLayout(_cbr)
         trow = QHBoxLayout()
         self.cmb_table = QComboBox()
         self.cmb_table.addItem("Segments", "segments")
@@ -283,7 +336,6 @@ class CableDialog(QDialog):
         self.table.setMinimumHeight(220)
         self.table.cellDoubleClicked.connect(self._row_clicked)
         v.addWidget(self.table)
-        brow = QHBoxLayout()
         self.btn_csv = QPushButton("Export CSV…")
         self.btn_shp = QPushButton("Export GIS…")
         self.btn_png = QPushButton("Save chart…")
@@ -297,9 +349,12 @@ class CableDialog(QDialog):
                       (self.btn_secs, cb.cable_add_sections), (self.btn_clear, cb.cable_clear_overlay)):
             b.clicked.connect(fn)
             b.setEnabled(False)
-            brow.addWidget(b)
-        v.addLayout(brow)
         v.addWidget(_muted("Double-click a row to go to it in the 3D view."))
+        # run + result buttons in a footer that is always visible; the dialog fits its content and the screen
+        from ui.dialog_fit import fit_dialog, make_footer
+        make_footer(outer, [(self.lbl_msg, 1), (self.btn_run, 0)],
+                    [self.btn_csv, self.btn_shp, self.btn_png, self.btn_layers, self.btn_secs, self.btn_clear])
+        fit_dialog(self, body, scroll, (720, 960))
 
     def showEvent(self, e):
         super().showEvent(e)
