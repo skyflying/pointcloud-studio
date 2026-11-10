@@ -265,6 +265,48 @@ class KPChart(QWidget):
 
 
 # ================================================================ dialog
+def cable_panels(r, depth):
+    """Chart panels of a cable analysis result (DoB, free span or rock berm) — on screen and in exports."""
+    def _elev(v):
+        return -np.asarray(v, float) if depth else np.asarray(v, float)
+    se = r["series"]
+    zl = "Depth (m)" if depth else "Elevation (m)"
+    if r["kind"] == "dob":
+        bands = [(g["kp_from"], g["kp_to"], RED) for g in r["segments"]]
+        lines = [("Seabed", SEABED, _elev(se["seabed"])), ("Cable top", CABLE, _elev(se["cable_top"]))]
+        dl = [("DoB", GREEN, se["dob"])]
+        if se.get("dob_reported") is not None:
+            dl.append(("Reported DoB", PRE, se["dob_reported"]))
+        panels = [{"lines": lines, "bands": bands, "ylabel": zl, "invert": depth},
+                  {"lines": dl, "bands": bands, "ylabel": "DoB (m)",
+                   "hlines": [(r["params"]["target"], RED, f"target {r['params']['target']:g} m"),
+                              (0.0, GREY, "seabed")]}]
+    elif r["kind"] == "span":
+        bands = [(g["kp_from"], g["kp_to"], RED if g["flag"] == "SPAN" else ORANGE) for g in r["segments"]]
+        panels = [{"lines": [("Seabed", SEABED, _elev(se["seabed"])),
+                             ("Cable top", CABLE, _elev(se["cable_top"]))], "bands": bands, "ylabel": zl,
+                   "invert": depth},
+                  {"lines": [("Gap", ORANGE, se["gap"])], "bands": bands, "ylabel": "Gap (m)",
+                   "hlines": [(r["params"]["gap_min"], RED, f"min gap {r['params']['gap_min']:g} m")]}]
+    else:
+        bands = [(g["kp_from"], g["kp_to"], RED) for g in r["segments"]]
+        lines = [("Design", DESIGN, _elev(se["design"])), ("As-built", ASBUILT, _elev(se["asbuilt"]))]
+        if "pre" in se:
+            lines.insert(0, ("Pre-lay", PRE, _elev(se["pre"])))
+        if "cable_top" in se:
+            lines.append(("Cable top", CABLE, _elev(se["cable_top"])))
+        panels = [{"lines": lines, "bands": bands, "ylabel": zl, "invert": depth},
+                  {"lines": [("As-built − design (crest)", ORANGE, se["crest_error"])], "bands": bands,
+                   "ylabel": "Δ (m)", "hlines": [(-r["params"]["tol"], RED, f"−{r['params']['tol']:g} m"),
+                                                 (0.0, GREY, "design")]}]
+        if "cover" in se:
+            h = [(r["params"]["min_cover"], RED, f"min {r['params']['min_cover']:g} m")] \
+                if r["params"].get("min_cover") is not None else []
+            panels.append({"lines": [("Cover over cable", GREEN, se["cover"])], "ylabel": "Cover (m)",
+                           "hlines": h, "bands": [(g["kp_from"], g["kp_to"], RED) for g in r["cover_segments"]]})
+    return panels
+
+
 class CableDialog(QDialog):
     TABS = ("dob", "span", "berm")
 
@@ -294,6 +336,35 @@ class CableDialog(QDialog):
         v.addWidget(_muted("Along a cable or pipeline route — subsea or on land — every <i>step</i> metres. A "
                            "<b>cable profile</b> is a route imported with a cable / pipe top column (File → Import Route). "
                            "Elevations are positive up; depth of burial (cover) = ground / seabed − cable top."))
+        # ---- one cable or a batch of cables
+        from PySide6.QtWidgets import QButtonGroup
+        from ui.check_helpers import CheckList, check_bar
+        self.batch = None
+        rr = QHBoxLayout()
+        self.rb_one = QRadioButton("One cable", checked=True)
+        self.rb_batch = QRadioButton("Batch — several cables")
+        self.rb_batch.setToolTip("Depth of burial and free span for many cables in one run, with an Excel summary "
+                                 "and a chart per cable (not for the rock berm check, which is per berm)")
+        grp = QButtonGroup(self)
+        grp.addButton(self.rb_one)
+        grp.addButton(self.rb_batch)
+        rr.addWidget(_muted("Run for"))
+        rr.addWidget(self.rb_one)
+        rr.addWidget(self.rb_batch)
+        rr.addStretch(1)
+        v.addLayout(rr)
+        self.batch_box = QWidget()
+        bv = QVBoxLayout(self.batch_box)
+        bv.setContentsMargins(0, 0, 0, 0)
+        self.lst_batch = CheckList()
+        self.lst_batch.setMinimumHeight(120)
+        bv.addWidget(check_bar(self.lst_batch, "Cables:"))
+        bv.addWidget(self.lst_batch)
+        bv.addWidget(_muted("Depth of burial and free span method A use cables with a cable-top column; method B "
+                            "uses any route. The KP range is the whole cable."))
+        self.batch_box.setVisible(False)
+        v.addWidget(self.batch_box)
+        self.rb_batch.toggled.connect(self._batch_mode)
         self.tabs = QTabWidget()
         self.tabs.addTab(self._tab_dob(), "Depth of burial / cover")
         self.tabs.addTab(self._tab_span(), "Free span")
@@ -344,6 +415,11 @@ class CableDialog(QDialog):
         self.btn_secs = QPushButton("Add check sections")
         self.btn_secs.setToolTip("Rock berm: cross-sections at the chosen interval, shown in the profile panel")
         self.btn_clear = QPushButton("Clear 3D")
+        self.btn_batch = QPushButton("Export batch…")
+        self.btn_batch.setToolTip("Batch: Excel workbook (summary, segments, KP bins of every cable) and a chart per "
+                                  "cable")
+        self.btn_batch.clicked.connect(cb.cable_export_batch)
+        self.btn_batch.setEnabled(False)
         for b, fn in ((self.btn_csv, cb.cable_export_csv), (self.btn_shp, cb.cable_export_shp),
                       (self.btn_png, cb.cable_save_chart), (self.btn_layers, cb.cable_add_layers),
                       (self.btn_secs, cb.cable_add_sections), (self.btn_clear, cb.cable_clear_overlay)):
@@ -353,7 +429,8 @@ class CableDialog(QDialog):
         # run + result buttons in a footer that is always visible; the dialog fits its content and the screen
         from ui.dialog_fit import fit_dialog, make_footer
         make_footer(outer, [(self.lbl_msg, 1), (self.btn_run, 0)],
-                    [self.btn_csv, self.btn_shp, self.btn_png, self.btn_layers, self.btn_secs, self.btn_clear])
+                    [self.btn_csv, self.btn_shp, self.btn_png, self.btn_layers, self.btn_secs, self.btn_clear,
+                     self.btn_batch])
         fit_dialog(self, body, scroll, (720, 960))
 
     def showEvent(self, e):
@@ -513,9 +590,30 @@ class CableDialog(QDialog):
         return w
 
     # ---------------------------------------------------------------- context
+    def _batch_mode(self, on):
+        self.batch_box.setVisible(on)
+        for cmb in (self.d_cable, self.s_cable, self.s_route):
+            cmb.setEnabled(not on)
+
     def set_context(self, routes, surfaces, clouds, depth):
         """routes: [(id, name, has_z, kp_range)], surfaces: [(id, name)], clouds: [(id, name)]"""
         self.depth = depth
+        from PySide6.QtWidgets import QListWidgetItem
+        known = {self.lst_batch.item(k).data(Qt.UserRole) for k in range(self.lst_batch.count())}
+        ticked = {self.lst_batch.item(k).data(Qt.UserRole) for k in range(self.lst_batch.count())
+                  if self.lst_batch.item(k).checkState() == Qt.Checked}
+        self.lst_batch.blockSignals(True)
+        self.lst_batch.clear()
+        for i, n, z, _k in routes:
+            it = QListWidgetItem(n + ("" if z else "  (no cable-top Z)"))
+            it.setData(Qt.UserRole, i)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            # earlier choices are kept; cables added since (e.g. imported with the window open) are ticked
+            it.setCheckState(Qt.Checked if (i in ticked or (i not in known and z)) else Qt.Unchecked)
+            self.lst_batch.addItem(it)
+        self.lst_batch.blockSignals(False)
+        if self.lst_batch.count():
+            self.lst_batch.itemChanged.emit(self.lst_batch.item(0))        # refresh the counter
         cables = [(i, n) for i, n, z, _k in routes if z]
         allr = [(i, n) for i, n, _z, _k in routes]
         self._kp = {i: k for i, _n, _z, k in routes}
@@ -591,8 +689,10 @@ class CableDialog(QDialog):
     def _run(self):
         self.lbl_msg.setText(" ")
         kind = self.TABS[self.tabs.currentIndex()]
+        if kind == "berm" and self.rb_batch.isChecked():
+            return self.show_error("The rock berm check is per berm (KP range, surfaces) — run it for one cable")
         if kind == "dob":
-            if self.d_cable.currentData() is None:
+            if self.d_cable.currentData() is None and not self.rb_batch.isChecked():
                 return self.show_error("Import a cable profile first (a route with a cable-top column)")
             if self.d_seabed.currentData() is None:
                 return self.show_error("No seabed surface or point cloud")
@@ -606,11 +706,13 @@ class CableDialog(QDialog):
                     "gap_min": self.s_gap.value(), "len_min": self.s_len.value(), "step": c["step"].value(),
                     "bin_m": c["bin"].value(), "kp_range": self._kp_range(c)}
             if spec["method"] == "profile":
-                if self.s_cable.currentData() is None or self.s_seabed.currentData() is None:
+                if (self.s_cable.currentData() is None and not self.rb_batch.isChecked()) \
+                        or self.s_seabed.currentData() is None:
                     return self.show_error("Method A needs a cable profile and a seabed")
                 spec.update(cable=self.s_cable.currentData(), seabed=self.s_seabed.currentData())
             else:
-                if self.s_route.currentData() is None or self.s_pc.currentData() is None:
+                if (self.s_route.currentData() is None and not self.rb_batch.isChecked()) \
+                        or self.s_pc.currentData() is None:
                     return self.show_error("Method B needs a route and a point cloud")
                 spec.update(route=self.s_route.currentData(), pc=self.s_pc.currentData(),
                             search=self.s_search.value(), side=self.s_side.value())
@@ -631,6 +733,16 @@ class CableDialog(QDialog):
                     "half_width": self.b_hw.value(), "tol": self.b_tol.value(),
                     "min_cover": self.b_cover.value() if self.b_cover_on.isChecked() else None,
                     "bin_m": self.b_bin.value(), "step": self.b_step.value(), "every": self.b_every.value()}
+        if self.rb_batch.isChecked():
+            if kind == "berm":
+                return self.show_error("The rock berm check is per berm (KP range, surfaces) — run it for one cable")
+            ids = [self.lst_batch.item(k).data(Qt.UserRole) for k in range(self.lst_batch.count())
+                   if self.lst_batch.item(k).checkState() == Qt.Checked]
+            if not ids:
+                return self.show_error("Tick the cables of the batch")
+            spec["kp_range"] = None
+            spec["batch"] = ids
+            return self.cb.cable_run_batch(kind, spec)
         rid = spec.get("cable", spec.get("route"))
         err = self._kp_error(rid, spec.get("kp_range") or ((spec["kp_from"], spec["kp_to"]) if kind == "berm" else None))
         if err:
@@ -697,49 +809,48 @@ class CableDialog(QDialog):
         return -np.asarray(v, float) if self.depth else np.asarray(v, float)
 
     def _chart(self):
-        r = self.res
-        se = r["series"]
-        kp = r["st"]["kp"]
-        zl = "Depth (m)" if self.depth else "Elevation (m)"
-        if r["kind"] == "dob":
-            bands = [(g["kp_from"], g["kp_to"], RED) for g in r["segments"]]
-            lines = [("Seabed", SEABED, self._elev(se["seabed"])), ("Cable top", CABLE, self._elev(se["cable_top"]))]
-            dl = [("DoB", GREEN, se["dob"])]
-            if se.get("dob_reported") is not None:
-                dl.append(("Reported DoB", PRE, se["dob_reported"]))
-            panels = [{"lines": lines, "bands": bands, "ylabel": zl, "invert": self.depth},
-                      {"lines": dl, "bands": bands, "ylabel": "DoB (m)",
-                       "hlines": [(r["params"]["target"], RED, f"target {r['params']['target']:g} m"),
-                                  (0.0, GREY, "seabed")]}]
-        elif r["kind"] == "span":
-            bands = [(g["kp_from"], g["kp_to"], RED if g["flag"] == "SPAN" else ORANGE) for g in r["segments"]]
-            panels = [{"lines": [("Seabed", SEABED, self._elev(se["seabed"])),
-                                 ("Cable top", CABLE, self._elev(se["cable_top"]))], "bands": bands, "ylabel": zl,
-                       "invert": self.depth},
-                      {"lines": [("Gap", ORANGE, se["gap"])], "bands": bands, "ylabel": "Gap (m)",
-                       "hlines": [(r["params"]["gap_min"], RED, f"min gap {r['params']['gap_min']:g} m")]}]
-        else:
-            bands = [(g["kp_from"], g["kp_to"], RED) for g in r["segments"]]
-            lines = [("Design", DESIGN, self._elev(se["design"])), ("As-built", ASBUILT, self._elev(se["asbuilt"]))]
-            if "pre" in se:
-                lines.insert(0, ("Pre-lay", PRE, self._elev(se["pre"])))
-            if "cable_top" in se:
-                lines.append(("Cable top", CABLE, self._elev(se["cable_top"])))
-            panels = [{"lines": lines, "bands": bands, "ylabel": zl, "invert": self.depth},
-                      {"lines": [("As-built − design (crest)", ORANGE, se["crest_error"])], "bands": bands,
-                       "ylabel": "Δ (m)", "hlines": [(-r["params"]["tol"], RED, f"−{r['params']['tol']:g} m"),
-                                                     (0.0, GREY, "design")]}]
-            if "cover" in se:
-                h = [(r["params"]["min_cover"], RED, f"min {r['params']['min_cover']:g} m")] \
-                    if r["params"].get("min_cover") is not None else []
-                panels.append({"lines": [("Cover over cable", GREEN, se["cover"])], "ylabel": "Cover (m)",
-                               "hlines": h, "bands": [(g["kp_from"], g["kp_to"], RED) for g in r["cover_segments"]]})
+        panels = cable_panels(self.res, self.depth)
         self.chart.setMinimumHeight(150 * len(panels) + 30)
-        self.chart.set_data(kp, panels)
+        self.chart.set_data(self.res["st"]["kp"], panels)
+
+    def show_batch(self, batch, depth):
+        """Batch result: the summary table (one row per cable); double-click a row to show that cable."""
+        self.batch = batch
+        self.depth = depth
+        self.cmb_table.blockSignals(True)
+        if self.cmb_table.findData("batch") < 0:
+            self.cmb_table.insertItem(0, "Batch summary (double-click a cable)", "batch")
+        self.cmb_table.setCurrentIndex(self.cmb_table.findData("batch"))
+        self.cmb_table.blockSignals(False)
+        n, e = len(batch["items"]), len(batch["errors"])
+        self.lbl_sum.setText(f"Batch: {n} cable(s) analysed" + (f", <span style='color:{RED}'>{e} failed</span> "
+                                                                 f"({'; '.join(batch['errors'][:3])})" if e else "")
+                             + " — double-click a cable to see its chart and stretches.")
+        self.btn_batch.setEnabled(n > 0)
+        for b_, t_ in ((self.btn_csv, "Export CSV… (all cables)"), (self.btn_shp, "Export GIS… (all cables)"),
+                       (self.btn_png, "Save charts… (all cables)")):
+            b_.setText(t_)
+        self._fill_table()
+
+    def clear_batch(self):
+        self.batch = None
+        for b_, t_ in ((self.btn_csv, "Export CSV…"), (self.btn_shp, "Export GIS…"), (self.btn_png, "Save chart…")):
+            b_.setText(t_)
+        j = self.cmb_table.findData("batch")
+        if j >= 0:
+            self.cmb_table.blockSignals(True)
+            self.cmb_table.removeItem(j)
+            self.cmb_table.setCurrentIndex(0)
+            self.cmb_table.blockSignals(False)
+        self.btn_batch.setEnabled(False)
 
     def _table_rows(self):
-        r = self.res
         which = self.cmb_table.currentData()
+        if which == "batch":
+            return [i["row"] for i in self.batch["items"]] if self.batch else []
+        r = self.res
+        if r is None:
+            return []
         if which == "bins":
             return r["bins"]
         segs = list(r["segments"])
@@ -750,7 +861,7 @@ class CableDialog(QDialog):
 
     def _fill_table(self, *_):
         self.table.clear()
-        if self.res is None:
+        if self.res is None and not (self.batch and self.cmb_table.currentData() == "batch"):
             return
         rows = self._table_rows()
         hide = {"i0", "i1", "x_from", "y_from", "x_to", "y_to"}
@@ -776,6 +887,10 @@ class CableDialog(QDialog):
         self.table.resizeColumnsToContents()
 
     def _row_clicked(self, i, _j):
+        if self.cmb_table.currentData() == "batch":
+            if self.batch and 0 <= i < len(self.batch["items"]):
+                self.cb.cable_open_batch_item(self.batch["items"][i]["item"])
+            return
         rows = self._table_rows()
         if 0 <= i < len(rows):
             row = rows[i]

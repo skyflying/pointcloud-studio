@@ -75,6 +75,41 @@ def year_colors(years):
 PURPLE, BLUE_BAR = "#b46bd6", "#4c9be8"
 
 
+def year_panels(r, y, depth):
+    """Chart of one year along the cable (the 'Year along the cable / in 3D' view): seabed, cable top (and the
+    cable after re-burial), the seabed needed for the required cover, and the cover — with the stretches."""
+    se = r["series"][y]
+    p = r["params"]
+    ev = (lambda a: -np.asarray(a)) if depth else (lambda a: np.asarray(a))
+    bands = []
+    for sg in r["segments"]:
+        if sg["year"] == y:
+            bands.append((sg["kp_from"], sg["kp_to"], {"re-burial": RED, "exposed": ORANGE}.get(sg["type"], "#b8b8ff")))
+    dash = "dash" if se["simulated"] else ""
+    lines = [("seabed " + str(y), "#4cc9f0", ev(se["seabed"]), dash),
+             ("cable top" + (f" {y}" if p["mode"] == "cumulative" else ""), ORANGE, ev(se["top"])),
+             (f"seabed needed for {p['required']:g} m cover", RED, ev(se["top"] + p["required"]), "dash")]
+    if p["mode"] == "cumulative" and not np.allclose(np.nan_to_num(se["top"]), np.nan_to_num(se["top_after"]),
+                                                     rtol=0, atol=1e-6):
+        lines.insert(2, (f"cable after re-burial {y}", GREEN, ev(se["top_after"])))
+    return [{"lines": lines, "ylabel": "Depth (m)" if depth else "Elevation (m)", "bands": bands,
+             "invert": depth},                                      # depths: seabed drawn above the cable
+            {"lines": [("cover " + str(y), GREEN, se["cover"], dash)], "ylabel": "cover (m)", "bands": bands,
+             "hlines": [(p["required"], RED, f"required {p['required']:g}"), (p["target"], ORANGE,
+                                                                              f"target {p['target']:g}"),
+                        (0.0, GREY, "exposed below")]}]
+
+
+def year_figures(res, depth):
+    """One figure per year (as the year view): [(file stem, title, x, panels, xlabel, xdec)]."""
+    out = []
+    for y in sorted(res["series"]):
+        sim = " (simulated)" if res["series"][y]["simulated"] else ""
+        out.append((f"year_{y}", f"{y}{sim} — seabed, cable and cover along the cable", res["st"]["kp"],
+                    year_panels(res, y, depth), None, 3))
+    return out
+
+
 def figure_set(res, depth):
     """The figures written by "Export figures…" for one cable: [(file stem, title, x, panels, xlabel, xdec)].
     All in the program's chart style (legends above the frames):
@@ -748,29 +783,8 @@ class MultiYearDialog(QDialog):
         if r is None or self.year() is None:
             return
         y = self.year()
-        se = r["series"][y]
-        p = r["params"]
         kp = r["st"]["kp"]
-        ev = (lambda a: -np.asarray(a)) if self.depth else (lambda a: np.asarray(a))
-        bands = []
-        for sg in r["segments"]:
-            if sg["year"] == y:
-                bands.append((sg["kp_from"], sg["kp_to"], {"re-burial": RED, "exposed": ORANGE}.get(sg["type"],
-                                                                                                     "#b8b8ff")))
-        dash = "dash" if se["simulated"] else ""
-        lines = [("seabed " + str(y), "#4cc9f0", ev(se["seabed"]), dash),
-                 ("cable top" + (f" {y}" if p["mode"] == "cumulative" else ""), ORANGE, ev(se["top"])),
-                 (f"seabed needed for {p['required']:g} m cover", RED, ev(se["top"] + p["required"]), "dash")]
-        if p["mode"] == "cumulative" and not np.allclose(np.nan_to_num(se["top"]), np.nan_to_num(se["top_after"]),
-                                                         rtol=0, atol=1e-6):
-            lines.insert(2, (f"cable after re-burial {y}", GREEN, ev(se["top_after"])))
-        panels = [{"lines": lines,
-                   "ylabel": "Depth (m)" if self.depth else "Elevation (m)", "bands": bands,
-                   "invert": self.depth},                      # depths: seabed drawn above the cable
-                  {"lines": [("cover " + str(y), GREEN, se["cover"], dash)], "ylabel": "cover (m)", "bands": bands,
-                   "hlines": [(p["required"], RED, f"required {p['required']:g}"), (p["target"], ORANGE,
-                                                                                     f"target {p['target']:g}"),
-                              (0.0, GREY, "exposed below")]}]
+        panels = year_panels(r, y, self.depth)
         self.prof.setVisible(True)
         self.prof.setMinimumHeight(360)
         self.prof.set_data(kp, panels)
@@ -1081,18 +1095,60 @@ class MultiYearMixin:
     def _my_need_single(self, what):
         if self._multiyear_result is None:
             self.statusBar().showMessage(f"{what}: double-click an item of the batch summary to open it first "
-                                         "(Excel and figures cover the whole batch)", 10000)
+                                         "(Excel, figures, CSV and GIS cover the whole batch)", 10000)
             return True
         return False
 
+    def _my_batch_results(self, what):
+        """[(item, result)] of the shown batch (recomputed one by one — only one kept in memory at a time is
+        not needed here, results are small) or of the single result."""
+        from core import multiyear
+        if self._multiyear_batch is None:
+            res = self._multiyear_result
+            if res is not None:
+                yield res["route"], res
+            return
+        from PySide6.QtWidgets import QApplication, QProgressDialog
+        items = [i["item"] for i in self._multiyear_batch["items"] if i["item"] in self._my_items]
+        dlg = QProgressDialog(f"{what}…", "Cancel", 0, len(items), self)
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+        for k, item in enumerate(items):
+            if dlg.wasCanceled():
+                break
+            dlg.setLabelText(f"{what} — {item}")
+            dlg.setValue(k)
+            QApplication.processEvents()
+            _kind, rt = self._my_items[item]
+            try:
+                yield item, multiyear.assess(rt, self._my_years, **self._my_params)
+            except Exception as e:  # noqa: BLE001
+                self.statusBar().showMessage(f"{item}: {type(e).__name__}: {e}", 10000)
+        dlg.setValue(len(items))
+
     def multiyear_export_csv(self):
-        res = self._multiyear_result
-        if self._my_need_single("CSV export"):
+        """One cable: a set of CSV files. Batch: a folder with one set per cable / string."""
+        if self._multiyear_result is None and self._multiyear_batch is None:
+            return
+        safe = lambda t: re.sub(r'[\\/:*?"<>|]+', "_", str(t)).strip()      # noqa: E731
+        if self._multiyear_batch is not None:
+            folder = QFileDialog.getExistingDirectory(self, "Folder for the CSV files of every cable / string")
+            if not folder:
+                return
+            n = 0
+            for item, res in self._my_batch_results("Writing CSV"):
+                self._my_write_csv(res, os.path.join(folder, safe(item)))
+                n += 1
+            self.statusBar().showMessage(f"CSV files of {n} cable(s) / string(s) saved in {folder}", 10000)
             return
         path, _ = QFileDialog.getSaveFileName(self, "Export (CSV)", "multiyear.csv", "CSV (*.csv)")
         if not path:
             return
-        base = os.path.splitext(path)[0]
+        self._my_write_csv(self._multiyear_result, os.path.splitext(path)[0])
+        self.statusBar().showMessage("Saved per-year, re-burial stretches, segments, stations and settings CSV", 10000)
+
+    def _my_write_csv(self, res, base):
+        """CSV files of one result: per year, re-burial stretches, interventions, segments, stations, settings."""
         self._write_rows(base + "_per_year.csv", res["table"])
         self._write_rows(base + "_reburial_stretches.csv", res["first"] or [{"note": "no re-burial needed"}])
         if res["summary"]["mode"] == "cumulative":
@@ -1119,25 +1175,20 @@ class MultiYearMixin:
                                         "the lowered cable" if res["summary"]["mode"] == "cumulative" else
                                         "independent: every year against the original cable level")
                      + "; cable does not sag (spans are upper estimates)\"\n")
-        self.statusBar().showMessage("Saved per-year, re-burial stretches, segments, stations and settings CSV", 10000)
 
-    def multiyear_export_gis(self):
-        from fileio import vector_io
-        res = self._multiyear_result
-        if self._my_need_single("GIS export"):
-            return
-        path, flt = QFileDialog.getSaveFileName(self, "Export segments (GIS)", "multiyear.gpkg", vector_io.WRITE_FILTER)
-        if not path:
-            return
-        path = vector_io.ext_from_filter(path, flt)
+    @staticmethod
+    def _my_gis_groups(res, item=None):
+        """{layer: features} of one result; item: added as attribute ITEM (batch)."""
         st = res["st"]
         xy = np.column_stack([st["x"], st["y"]])
         top = np.nan_to_num(res["cable_top"])
+        tag = {} if item is None else {"ITEM": str(item)}
 
         def feat(sg, attrs):
             i0 = sg["i0"]
             i1 = min(max(sg["i1"], i0 + 1), len(xy) - 1)
-            return {"type": "LineString", "parts": [np.column_stack([xy[i0:i1 + 1], top[i0:i1 + 1]])], "attrs": attrs}
+            return {"type": "LineString", "parts": [np.column_stack([xy[i0:i1 + 1], top[i0:i1 + 1]])],
+                    "attrs": {**tag, **attrs}}
         segs = [feat(s, {"YEAR": s["year"], "DATA": s["data"], "TYPE": s["type"], "KP_FROM": s["kp_from"],
                          "KP_TO": s["kp_to"], "LENGTH_M": s["length_m"], "VALUE_M": s["value_m"]})
                 for s in res["segments"]]
@@ -1150,7 +1201,34 @@ class MultiYearMixin:
                                                 "LENGTH_M": s["length_m"], "LOWER_MAX": s["lowering_max"],
                                                 "COVER_AFT": s["cover_after"], "HOURS": s["hours"],
                                                 "BEYOND": s["beyond_trencher"]}) for s in res["interventions"]]
+        # the assessed cable itself (so the result can be read without the route file)
+        groups["cable"] = [{"type": "LineString", "parts": [np.column_stack([xy, top])],
+                            "attrs": {**tag, "NAME": str(res["route"]), "LENGTH_M": float(res["summary"]["length"])}}]
+        return groups
+
+    def multiyear_export_gis(self):
+        """Segments, re-burial stretches, interventions and the cable line — one cable, or every cable / string
+        of a batch in the same files (attribute ITEM)."""
+        from fileio import vector_io
+        if self._multiyear_result is None and self._multiyear_batch is None:
+            return
+        path, flt = QFileDialog.getSaveFileName(self, "Export segments (GIS)", "multiyear.gpkg", vector_io.WRITE_FILTER)
+        if not path:
+            return
+        path = vector_io.ext_from_filter(path, flt)
+        batch = self._multiyear_batch is not None
+        groups = {}
+        n = 0
+        for item, res in self._my_batch_results("Writing GIS"):
+            for g, feats in self._my_gis_groups(res, item if batch else None).items():
+                groups.setdefault(g, []).extend(feats)
+            n += 1
+        if not n:
+            return
         self._write_feature_groups(path, groups)
+        if batch:
+            self.statusBar().showMessage(f"GIS layers of {n} cable(s) / string(s) saved (attribute ITEM) — "
+                                         f"{os.path.basename(path)}", 10000)
 
     def _my_settings(self):
         p = {k: v for k, v in self._my_params.items() if k not in ("dsbl", "isbl")}
@@ -1241,6 +1319,11 @@ class MultiYearMixin:
                 res = multiyear.assess(rt, self._my_years, **self._my_params)
             for stem, title, x, panels, xl, xd in figure_set(res, self.depth_mode):
                 render_figure(os.path.join(folder, f"{safe(item)}_{stem}.png"), f"{item} — {title}", x, panels,
+                              xl, xd)
+            ydir = os.path.join(folder, f"{safe(item)}_years")         # every year, as the year view
+            os.makedirs(ydir, exist_ok=True)
+            for stem, title, x, panels, xl, xd in year_figures(res, self.depth_mode):
+                render_figure(os.path.join(ydir, f"{safe(item)}_{stem}.png"), f"{item} — {title}", x, panels,
                               xl, xd)
                 n += 1
         dlg.setValue(len(todo))

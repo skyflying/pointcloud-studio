@@ -592,6 +592,12 @@ class ProjectMixin:
             return
         keep = self.viewer.bbox
         lo, hi = ds.bbox()
+        lo, hi = np.asarray(lo, float), np.asarray(hi, float)
+        if not (np.isfinite(lo[:2]).all() and np.isfinite(hi[:2]).all()):
+            self.statusBar().showMessage(f"{ds.name}: its coordinates are not valid numbers (failed coordinate "
+                                         "transformation?) — remove it and import it again with the right "
+                                         "coordinate system", 12000)
+            return
         if not (np.isfinite(lo[2]) and np.isfinite(hi[2])):          # routes, structures: no Z
             lo, hi = lo.copy(), hi.copy()
             lo[2], hi[2] = (keep[0][2], keep[1][2]) if keep is not None else (0.0, 0.0)

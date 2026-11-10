@@ -423,7 +423,13 @@ CUBE 與 S-44 共用：點的屬性欄位（LAS extra bytes 或 XYZ 欄位，如
 - **特徵物偵測**：只提供「點密度是否足以解析該尺寸」的統計參考，不是偵測測試。
 - 結果視窗可選取超限的點、匯出 Excel／CSV 報告，並可加入「各格網合格比例」與「覆蓋／空白」圖層。結果為輔助判斷，不代表成果認證。
 
+## 海纜分析（Cable analysis）批次
+- 視窗上方「Run for」選 **Batch — several cables**，勾選海纜後執行：埋深（DoB）或懸跨（方法 A：需纜線頂部高程；方法 B：任何路由＋點雲）會逐條分析，KP 範圍為整條海纜。拋石檢核依個別拋石段，不提供批次。
+- 結果表格顯示「Batch summary」（每條海纜一列）；雙擊某條海纜即顯示其圖表、區段與 3D 標示。
+- **Export batch…**：輸出 Excel（Summary、Segments、KP bins 含海纜欄位、設定、未分析的海纜）以及每條海纜一張圖。
+
 ## 多年期海纜評估：規則選項與連結檔案
+- **Export figures** 除 00–05 外，另輸出每一年的「沿線年度圖」（海床、纜線、再埋設、覆土），存於每條海纜／string 的資料夾（*_years），單條與 batch 皆同。
 - **Link files (read when run)**：逐年海床網格（GeoTIFF／ASC…）只建立連結，不載入專案；執行評估時才沿著海纜讀取需要的範圍，適合數十年的模式結果，避免記憶體不足。ISBL／DSBL 也可用「…」連結單一檔案。
 - **ISBL（選填）**：可只用於圖面，或在「Initial cable level」選「ISBL − required burial」：先做削峰（只挖不填，坡度上限），再減去要求埋深（沙波區：ISBL 坡度大於設定值，或 ISBL − DSBL 大於設定值；其他區域另一數值），路由不需要纜線頂部高程。
 - **Re-burial trigger**：覆土小於門檻，或僅在裸露（纜線高於海床）時。

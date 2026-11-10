@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 
 import numpy as np
-from PySide6.QtCore import Slot
+from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import QFileDialog
 
 RGBA = {"ok": (0.02, 0.84, 0.63, 1.0), "fail": (0.94, 0.28, 0.44, 1.0), "nodata": (0.55, 0.57, 0.61, 0.8),
@@ -36,6 +36,7 @@ class CableMixin:
         self.cable_dialog = None
         self._cable_result = None
         self._cable_ctx = {}
+        self._cable_batch = None
 
     # ---------------------------------------------------------------- dialog
     def open_cable_dialog(self, tab=0):
@@ -106,7 +107,163 @@ class CableMixin:
                       min_cover=sp["min_cover"], every=sp["every"])
             label = "Rock berm check…"
         self._cable_ctx = {"kind": kind, "spec": sp, "route_id": r.id, "route": r.name}
+        self._cable_batch = None                       # a single run replaces an earlier batch
+        self.cable_dialog.clear_batch()
         self._run_task(label, fn, (), kw, self._on_cable_done, report_progress=True)
+
+    # ---------------------------------------------------------------- batch (several cables)
+    def cable_run_batch(self, kind, sp):
+        """Depth of burial or free span for every ticked cable; results kept per cable."""
+        from core import cable
+        if self._busy(self.cable_dialog):
+            return
+        P = self.project
+        items = []
+        for rid in sp["batch"]:
+            d = P.get(rid)
+            if d is not None:
+                items.append((d.name, rid, d.obj))
+        need_z = kind == "dob" or (kind == "span" and sp["method"] == "profile")
+        skipped = [n for n, _i, r in items if need_z and r.z is None]
+        items = [it for it in items if not (need_z and it[2].z is None)]
+        if not items:
+            return self.cable_dialog.show_error("None of the ticked cables has a cable-top column")
+        seabed = P.get(sp["seabed"]).obj if sp.get("seabed") is not None else None
+        pc = P.get(sp["pc"]).obj if sp.get("pc") is not None else None
+        seen = {}
+
+        def job(progress=None):
+            out = {"kind": kind, "spec": sp, "items": [], "results": {}, "errors": [f"{n}: no cable-top Z"
+                                                                                  for n in skipped]}
+            for k, (name, rid, route) in enumerate(items):
+                n_ = seen.get(name, 0)
+                seen[name] = n_ + 1
+                iid = name if n_ == 0 else f"{name} ({n_ + 1})"
+                sub = (lambda f, k=k: progress((k + f) / len(items))) if progress else None
+                try:
+                    if kind == "dob":
+                        res = cable.dob_analysis(route, seabed, step=sp["step"], target=sp["target"],
+                                                 bin_m=sp["bin_m"], width=sp["width"], progress=sub)
+                    elif sp["method"] == "profile":
+                        res = cable.free_span_profile(route, seabed, diameter=sp["diameter"], gap_min=sp["gap_min"],
+                                                      len_min=sp["len_min"], step=sp["step"], bin_m=sp["bin_m"],
+                                                      progress=sub)
+                    else:
+                        res = cable.free_span_points(route, pc, search=sp["search"], side=sp["side"],
+                                                     diameter=sp["diameter"], gap_min=sp["gap_min"],
+                                                     len_min=sp["len_min"], step=sp["step"], bin_m=sp["bin_m"],
+                                                     progress=sub)
+                except Exception as e:  # noqa: BLE001 — one cable must not stop the batch
+                    out["errors"].append(f"{iid}: {type(e).__name__}: {e}")
+                    continue
+                row = {"cable": iid}
+                row.update({a: (round(b, 3) if isinstance(b, float) else b) for a, b in res["summary"].items()
+                            if not isinstance(b, (list, dict, tuple))})
+                out["items"].append({"item": iid, "route_id": rid, "row": row})
+                out["results"][iid] = res
+            return out
+
+        self._cable_ctx = {"kind": kind, "spec": sp, "route_id": None, "route": "batch"}
+        self._run_task(f"{'Depth of burial' if kind == 'dob' else 'Free spans'} — {len(items)} cables…", job, (), {},
+                       self._on_cable_batch_done, report_progress=True)
+
+    @Slot(object)
+    def _on_cable_batch_done(self, out):
+        self._close_progress()
+        self._cable_batch = out
+        self.cable_dialog.show_batch(out, self.depth_mode)
+        if out["items"]:
+            self.cable_open_batch_item(out["items"][0]["item"], switch_table=False)
+        self.statusBar().showMessage(f"Batch: {len(out['items'])} cable(s), {len(out['errors'])} not analysed",
+                                     10000)
+
+    def cable_open_batch_item(self, iid, switch_table=True):
+        b = getattr(self, "_cable_batch", None)
+        if not b or iid not in b["results"]:
+            return
+        res = b["results"][iid]
+        it = next(i for i in b["items"] if i["item"] == iid)
+        self._cable_ctx = {"kind": b["kind"], "spec": b["spec"], "route_id": it["route_id"], "route": iid}
+        self._cable_result = res
+        d = self.cable_dialog
+        d.show_result(res, self.depth_mode)
+        if switch_table:
+            j = d.cmb_table.findData("segments")
+            if j >= 0:
+                d.cmb_table.setCurrentIndex(j)
+        d.btn_batch.setEnabled(True)
+        self._cable_overlay()
+
+    def cable_export_batch(self):
+        """Folder: <kind>_batch.xlsx (Summary, Segments, KP bins with a cable column; CSV files without openpyxl)
+        and one chart per cable."""
+        import re
+        from PySide6.QtWidgets import QApplication, QProgressDialog
+        from ui.cable_dialog import cable_panels
+        from ui.multiyear_ui import render_figure
+        b = getattr(self, "_cable_batch", None)
+        if not b or not b["items"]:
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Folder for the batch results")
+        if not folder:
+            return
+        k = b["kind"]
+        tag = {"dob": "depth_of_burial", "span": "free_span"}[k]
+        hide = {"i0", "i1"}
+
+        def clean(rows, iid):
+            return [{"cable": iid, **{a: v for a, v in r.items() if a not in hide}} for r in rows]
+
+        sheets = {"Summary": [i["row"] for i in b["items"]],
+                  "Segments": [r for i in b["items"] for r in clean(b["results"][i["item"]]["segments"], i["item"])],
+                  "KP bins": [r for i in b["items"] for r in clean(b["results"][i["item"]]["bins"], i["item"])]}
+        if b["errors"]:
+            sheets["Not analysed"] = [{"cable / reason": e} for e in b["errors"]]
+        sheets["Settings"] = [{"item": a, "value": str(v)} for a, v in b["spec"].items() if a != "batch"]
+        written = []
+        try:
+            import openpyxl
+            from openpyxl.styles import Font
+            wb = openpyxl.Workbook()
+            wb.remove(wb.active)
+            for name, rows in sheets.items():
+                ws = wb.create_sheet(name[:31])
+                cols = list(dict.fromkeys(c for r in rows for c in r)) or ["note"]
+                ws.append(cols)
+                for c in ws[1]:
+                    c.font = Font(bold=True)
+                for r in rows:
+                    ws.append([(None if isinstance(r.get(c), float) and not np.isfinite(r.get(c)) else r.get(c))
+                               if not isinstance(r.get(c), (list, tuple, dict)) else str(r.get(c)) for c in cols])
+            path = os.path.join(folder, f"{tag}_batch.xlsx")
+            wb.save(path)
+            written.append(path)
+        except ImportError:
+            for name, rows in sheets.items():
+                path = os.path.join(folder, f"{tag}_batch_{name.replace(' ', '_').lower()}.csv")
+                cols = list(dict.fromkeys(c for r in rows for c in r)) or ["note"]
+                with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                    f.write(",".join(cols) + "\n")
+                    for r in rows:
+                        f.write(",".join("" if r.get(c) is None else str(r.get(c)) for c in cols) + "\n")
+                written.append(path)
+        safe = lambda t: re.sub(r'[\\/:*?"<>|]+', "_", str(t)).strip()      # noqa: E731
+        dlg = QProgressDialog("Writing charts…", "Cancel", 0, len(b["items"]), self)
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+        title = {"dob": "Depth of burial", "span": "Free span"}[k]
+        for n, it in enumerate(b["items"]):
+            if dlg.wasCanceled():
+                break
+            dlg.setValue(n)
+            QApplication.processEvents()
+            res = b["results"][it["item"]]
+            path = os.path.join(folder, f"{safe(it['item'])}_{tag}.png")
+            render_figure(path, f"{it['item']} — {title}", res["st"]["kp"], cable_panels(res, self.depth_mode),
+                          None, 3)
+            written.append(path)
+        dlg.setValue(len(b["items"]))
+        self.statusBar().showMessage(f"Batch results: {len(written)} file(s) in {folder}", 10000)
 
     @Slot(object)
     def _on_cable_done(self, res):
@@ -197,14 +354,9 @@ class CableMixin:
         path, _ = QFileDialog.getSaveFileName(self, caption, default, filt)
         return res, path or None
 
-    def cable_export_csv(self):
+    def _cable_write_csv(self, res, base):
+        """summary / segments / KP bins / stations CSV of one result; returns the file names."""
         from core import crs as crsmod
-        if self._cable_result is None:
-            return
-        res, path = self._cable_base("Export analysis (CSV)", f"cable_{self._cable_result['kind']}.csv", "CSV (*.csv)")
-        if not path:
-            return
-        base = os.path.splitext(path)[0]
         k = res["kind"]
 
         def cell(v):
@@ -244,19 +396,38 @@ class CableMixin:
             for a, b in meta:
                 v = f"{b:.4f}" if isinstance(b, float) else str(b)
                 f.write(f"{a},\"{v}\"\n")
-        files = [base + s for s in ("_summary.csv", "_segments.csv", "_kp_bins.csv", "_stations.csv")]
-        self.statusBar().showMessage("Saved " + ", ".join(os.path.basename(f) for f in files), 10000)
+        return [base + s for s in ("_summary.csv", "_segments.csv", "_kp_bins.csv", "_stations.csv")]
 
-    def cable_export_shp(self):
-        from fileio import vector_io
+    def _cable_batch_items(self):
+        """[(cable, result)] of the batch shown in the dialog, else None."""
+        b = getattr(self, "_cable_batch", None)
+        if not b or not b.get("items"):
+            return None
+        return [(i["item"], b["results"][i["item"]]) for i in b["items"] if i["item"] in b["results"]]
+
+    def cable_export_csv(self):
+        """One cable: summary / segments / KP bins / stations CSV. Batch: the same for every cable, in a folder."""
+        import re
+        items = self._cable_batch_items()
+        if items:
+            folder = QFileDialog.getExistingDirectory(self, "Folder for the CSV files of every cable")
+            if not folder:
+                return
+            safe = lambda t: re.sub(r'[\\/:*?"<>|]+', "_", str(t)).strip()      # noqa: E731
+            for item, res in items:
+                self._cable_write_csv(res, os.path.join(folder, f"{safe(item)}_{res['kind']}"))
+            self.statusBar().showMessage(f"CSV files of {len(items)} cable(s) saved in {folder}", 10000)
+            return
         if self._cable_result is None:
             return
-        res = self._cable_result
-        path, flt = QFileDialog.getSaveFileName(self, "Export segments (GIS)", f"cable_{res['kind']}.gpkg",
-                                                vector_io.WRITE_FILTER)
+        res, path = self._cable_base("Export analysis (CSV)", f"cable_{self._cable_result['kind']}.csv", "CSV (*.csv)")
         if not path:
             return
-        path = vector_io.ext_from_filter(path, flt)
+        files = self._cable_write_csv(res, os.path.splitext(path)[0])
+        self.statusBar().showMessage("Saved " + ", ".join(os.path.basename(f) for f in files), 10000)
+
+    @staticmethod
+    def _cable_gis_feats(res, name=None):
         st, se = res["st"], res["series"]
         pts = res.get("crest_xy", np.column_stack([st["x"], st["y"]]))
         zser = se.get("cable_top") if res["kind"] != "berm" else se.get("asbuilt")
@@ -277,21 +448,57 @@ class CableMixin:
             feats.append({"type": "LineString",
                           "parts": [np.column_stack([pts[i0:i1 + 1], np.nan_to_num(z)])],
                           "attrs": {"TYPE": typ, "KP_FROM": g["kp_from"], "KP_TO": g["kp_to"], "LENGTH_M": g["length"],
-                                    "VALUE_M": float(val) if val is not None else None, "ROUTE": res["route"]}})
+                                    "VALUE_M": float(val) if val is not None else None,
+                                    "ROUTE": str(name or res["route"])}})
+        return feats
+
+    def cable_export_shp(self):
+        """Stretches as lines (TYPE, KP, length, value, ROUTE) — one cable, or every cable of a batch in one file."""
+        from fileio import vector_io
+        items = self._cable_batch_items()
+        if not items:
+            if self._cable_result is None:
+                return
+            items = [(self._cable_result["route"], self._cable_result)]
+        k = items[0][1]["kind"]
+        path, flt = QFileDialog.getSaveFileName(self, "Export segments (GIS)",
+                                                f"cable_{k}{'_batch' if len(items) > 1 else ''}.gpkg",
+                                                vector_io.WRITE_FILTER)
+        if not path:
+            return
+        path = vector_io.ext_from_filter(path, flt)
+        feats = [f for name, res in items for f in self._cable_gis_feats(res, name)]
         if not feats:
             self.statusBar().showMessage("No segments to export", 6000)
             return
         try:
-            vector_io.write(path, feats, self.project.crs, layer=f"cable_{res['kind']}",
+            vector_io.write(path, feats, self.project.crs, layer=f"cable_{k}",
                             fields=[("TYPE", "C"), ("KP_FROM", "N"), ("KP_TO", "N"), ("LENGTH_M", "N"),
                                     ("VALUE_M", "N"), ("ROUTE", "C")])
         except Exception as e:  # noqa: BLE001
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.critical(self, "Export failed", f"{type(e).__name__}: {e}")
             return
-        self.statusBar().showMessage(f"Saved {os.path.basename(path)} ({len(feats)} segment(s))", 8000)
+        self.statusBar().showMessage(f"Saved {os.path.basename(path)} ({len(feats)} segment(s) of {len(items)} "
+                                     f"cable(s))", 8000)
 
     def cable_save_chart(self):
+        items = self._cable_batch_items()
+        if items:                                     # batch: one chart per cable, in a folder
+            import re
+            from ui.cable_dialog import cable_panels
+            from ui.multiyear_ui import render_figure
+            folder = QFileDialog.getExistingDirectory(self, "Folder for the chart of every cable")
+            if not folder:
+                return
+            safe = lambda t: re.sub(r'[\\/:*?"<>|]+', "_", str(t)).strip()      # noqa: E731
+            title = {"dob": "Depth of burial", "span": "Free span", "berm": "Rock berm"}
+            for item, res in items:
+                render_figure(os.path.join(folder, f"{safe(item)}_{res['kind']}.png"),
+                              f"{item} — {title[res['kind']]}", res["st"]["kp"], cable_panels(res, self.depth_mode),
+                              None, 3)
+            self.statusBar().showMessage(f"Charts of {len(items)} cable(s) saved in {folder}", 10000)
+            return
         if self.cable_dialog is None or self._cable_result is None:
             return
         path, _ = QFileDialog.getSaveFileName(self, "Save chart", f"cable_{self._cable_result['kind']}.png",

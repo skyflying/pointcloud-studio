@@ -1220,12 +1220,22 @@ class PointCloudViewer:
             lo, hi = self.pc.bbox_min - self.origin, self.pc.bbox_max - self.origin
         else:
             return
+        lo = np.asarray(lo, float).copy()
+        hi = np.asarray(hi, float).copy()
+        # a box with NaN / ±inf (e.g. coordinates that could not be transformed) must not break the camera:
+        # keep the finite axes, make the others flat at 0
+        bad = ~(np.isfinite(lo) & np.isfinite(hi)) | (np.abs(lo) > 1e12) | (np.abs(hi) > 1e12)
+        lo[bad] = 0.0
+        hi[bad] = 0.0
         center = (lo + hi) / 2.0
         ext = hi - lo
         center[2] *= self.z_scale
         ext[2] *= self.z_scale
+        size = float(np.linalg.norm(ext))
+        if not np.isfinite(size) or size <= 0:
+            size = 100.0
         self.camera.center = tuple(float(v) for v in center)
-        self.camera.scale_factor = float(max(np.linalg.norm(ext), 1e-3))
+        self.camera.scale_factor = float(min(max(size, 1e-3), 1e9))
         self.canvas.update()
 
     def look_at(self, x, y, z=None, extent=50.0):

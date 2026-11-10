@@ -441,9 +441,24 @@ class RouteMixin:
                 if ok and pcrs is not None:
                     proj.crs = pcrs
         note = ""
+        routes = self._check_route_coords(routes, src_crs, proj.crs)
+        if routes is None:
+            return None
         if src_crs is not None and proj.crs is not None and crsmod.same(src_crs, proj.crs) is False:
-            reproject_routes(routes, src_crs, proj.crs)
-            note = f" · reprojected from {crsmod.label(src_crs)}"
+            if not getattr(routes, "_as_project", False):
+                reproject_routes(routes, src_crs, proj.crs)
+                note = f" · reprojected from {crsmod.label(src_crs)}"
+        bad = [r.name for r in routes if not np.isfinite(r.xy).all()]
+        if bad:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Route not imported",
+                                 f"{len(bad)} route(s) could not be transformed from {crsmod.label(src_crs)} to "
+                                 f"{crsmod.label(proj.crs)} ({', '.join(bad[:5])}): some coordinates fall outside "
+                                 "that coordinate system. Check the coordinate system of the file (.prj) — the "
+                                 "coordinates may already be projected.")
+            if not proj.datasets:
+                self._new_project()
+            return None
         first = None
         for r in routes:
             ds = Dataset(proj.unique_name(r.name), "route", r, path, crs=proj.crs, source_crs=src_crs)
@@ -453,6 +468,33 @@ class RouteMixin:
         self._set_dirty(True)
         self.statusBar().showMessage(f"Imported {len(routes)} route(s){note}", 8000)
         return first
+
+    def _check_route_coords(self, routes, src_crs, proj_crs):
+        """Coordinates that do not fit the file's coordinate system (e.g. a .prj saying latitude / longitude for
+        projected metres) would become ±inf after the transformation: ask what they are instead."""
+        from PySide6.QtWidgets import QMessageBox
+        from core import crs as crsmod
+        xy = np.vstack([r.xy for r in routes]) if routes else np.empty((0, 2))
+        if not len(xy):
+            return routes
+        if not np.isfinite(xy).all():
+            QMessageBox.critical(self, "Route not imported", "The file contains coordinates that are not numbers.")
+            return None
+        if src_crs is not None and crsmod.is_geographic(src_crs) and \
+                (np.abs(xy[:, 0]).max() > 360 or np.abs(xy[:, 1]).max() > 90):
+            lab = crsmod.label(proj_crs) if proj_crs is not None else "the project system"
+            r = QMessageBox.question(
+                self, "Coordinates are not latitude / longitude",
+                f"The file says {crsmod.label(src_crs)} (degrees), but its coordinates (e.g. {xy[0, 0]:,.1f}, "
+                f"{xy[0, 1]:,.1f}) are not degrees — they look projected.\n\nImport them as {lab} (no "
+                "transformation)?\n\nNo = cancel the import.", QMessageBox.Yes | QMessageBox.No)
+            if r != QMessageBox.Yes:
+                return None
+
+            class _L(list):
+                _as_project = True
+            return _L(routes)
+        return routes
 
     def _show_routes(self):
         self.viewer.set_routes([(d.obj, d.style) for d in self.project.of_kind("route", visible_only=True)])

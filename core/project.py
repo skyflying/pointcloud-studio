@@ -181,7 +181,14 @@ class Project:
         return before != self.edit_id
 
     def bbox(self, visible_only=False):
-        boxes = [d.bbox() for d in self.datasets if d.visible or not visible_only]
+        boxes = []
+        for d in self.datasets:
+            if d.visible or not visible_only:
+                lo_, hi_ = d.bbox()
+                lo_, hi_ = np.asarray(lo_, float), np.asarray(hi_, float)
+                # non-finite / absurd values (failed transformation) are ignored like a missing Z
+                boxes.append((np.where(np.isfinite(lo_) & (np.abs(lo_) < 1e12), lo_, np.nan),
+                              np.where(np.isfinite(hi_) & (np.abs(hi_) < 1e12), hi_, np.nan)))
         if not boxes:
             return None
         with np.errstate(all="ignore"), warnings.catch_warnings():

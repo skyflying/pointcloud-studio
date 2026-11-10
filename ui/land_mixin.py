@@ -58,7 +58,33 @@ class LandMixin:
                                          "for the project.", allow_unknown=False, warn_geographic=True)
                 if ok and pcrs is not None:
                     proj.crs = pcrs
+        allxy = [np.asarray(p_, float)[:, :2] for f in feats for p_ in f["parts"] if len(p_)]
+        if allxy and src is not None and crsmod.is_geographic(src):
+            A = np.vstack(allxy)
+            if np.isfinite(A).all() and (np.abs(A[:, 0]).max() > 360 or np.abs(A[:, 1]).max() > 90):
+                from PySide6.QtWidgets import QMessageBox
+                r = QMessageBox.question(
+                    self, "Coordinates are not latitude / longitude",
+                    f"The file says {crsmod.label(src)} (degrees), but its coordinates (e.g. {A[0, 0]:,.1f}, "
+                    f"{A[0, 1]:,.1f}) are not degrees — they look projected.\n\nImport them as "
+                    f"{crsmod.label(proj.crs) if proj.crs is not None else 'the project system'} (no "
+                    "transformation)?\n\nNo = cancel the import.", QMessageBox.Yes | QMessageBox.No)
+                if r != QMessageBox.Yes:
+                    if not proj.datasets:
+                        self._new_project()
+                    return
+                src = proj.crs
         feats = vector_io.reproject(feats, src, proj.crs)
+        bad = sum(1 for f in feats for p_ in f["parts"] if len(p_) and not np.isfinite(np.asarray(p_, float)[:, :2]).all())
+        if bad:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Layer not imported",
+                                 f"{bad} feature part(s) could not be transformed from {crsmod.label(src)} to "
+                                 f"{crsmod.label(proj.crs)}: some coordinates fall outside that coordinate system. "
+                                 "Check the coordinate system of the file.")
+            if not proj.datasets:
+                self._new_project()
+            return
         name = os.path.splitext(os.path.basename(path))[0] + (f" · {layer}" if layer else "")
         proj.add(Dataset(proj.unique_name(name), "vector", VectorLayer(feats, meta={"info": info}), path,
                          crs=proj.crs, source_crs=src))
