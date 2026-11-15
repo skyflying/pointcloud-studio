@@ -129,10 +129,21 @@ def write_las(pc, idx, path, compress=None, version="1.2", scale=0.001, epsg=Non
             raise RuntimeError(f"{e}. LAS export keeps all dimensions of the original file, so it must still be "
                                "there unchanged — restore it, or export as text (XYZ) instead.") from e
     if las is not None:  # LAS → LAS: keep everything from the source
+        from fileio.las_ref import convert_chunk, upgrade_format_id
         hdr = copy.deepcopy(las.header)
+        cls = pc.attrs.get("Classification")
+        up = None
+        if cls is not None and len(idx) and hdr.point_format.id < 6 and int(np.max(cls[idx])) > 31:
+            up = upgrade_format_id(hdr.point_format.id)           # classes above 31 need LAS 1.4 format 6+
+            hdr = convert_chunk(copy.deepcopy(las.header), las.points[:0], up).header
         with laspy.open(path, mode="w", header=hdr, do_compress=compress) as w:
             for s, ci in _chunks(idx):
-                w.write_points(las.points[ci])
+                pts = las.points[ci]
+                if up is not None:
+                    pts = convert_chunk(las.header, pts, up).points
+                if cls is not None:
+                    pts.classification = np.asarray(cls[ci], dtype=np.uint8)
+                w.write_points(pts)
                 _report(progress, s + len(ci), len(idx))
         return
 
@@ -148,8 +159,19 @@ def write_las(pc, idx, path, compress=None, version="1.2", scale=0.001, epsg=Non
     hdr.offsets = np.floor(pc.xyz[idx].min(axis=0)) if len(idx) else np.zeros(3)
 
     custom = [k for k in a if k not in STANDARD_ATTRS] if extra_dims else []
+    # extra-byte names must not clash with the point format's own dimensions (e.g. a text column 'intensity')
+    taken = {d.lower() for d in hdr.point_format.dimension_names}
+    ename = {}
+    for k in custom:
+        nm = _las_name(k)
+        base, i = nm, 1
+        while nm.lower() in taken:
+            nm = f"{base[:29]}_{i}"
+            i += 1
+        taken.add(nm.lower())
+        ename[k] = nm
     if custom:
-        hdr.add_extra_dims([laspy.ExtraBytesParams(name=_las_name(k), type=np.float64,
+        hdr.add_extra_dims([laspy.ExtraBytesParams(name=ename[k], type=np.float64,
                                                    description=k[:32]) for k in custom])
     if epsg:
         if pyproj is None:
@@ -174,7 +196,7 @@ def write_las(pc, idx, path, compress=None, version="1.2", scale=0.001, epsg=Non
                 for k, d in (("R", "red"), ("G", "green"), ("B", "blue")):
                     pts[d] = np.clip(np.nan_to_num(a[k][ci]) * rgb_mul, 0, 65535).astype(np.uint16)
             for k in custom:
-                pts[_las_name(k)] = a[k][ci].astype(np.float64)
+                pts[ename[k]] = a[k][ci].astype(np.float64)
             w.write_points(pts)
             _report(progress, s + len(ci), len(idx))
 

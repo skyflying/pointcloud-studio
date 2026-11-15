@@ -376,6 +376,11 @@ def run(app=None):
         body = [x for x in c["bins"] if abs(x["kp_from"] - 10.2) < 1e-9][0]["design_m3"]
         assert abs(body - 500) / 500 < 0.03, body
         assert len(c["segments"]) == 1 and abs(c["segments"][0]["length"] - 20) <= 2, c["segments"]
+        # formatted reports of the three analyses (sheets build without error; totals match the stretches)
+        from core import cable_report
+        for res_ in (a, b, c):
+            shs = cable_report.sheets([("R", res_)], "test")
+            assert [x["name"] for x in shs] == ["Summary", "Stretches", "KP bins", "Settings"], shs
         return (f"DoB 0.8 m over {g[0]['length']:.0f} m · span A {a['segments'][0]['length']:.0f} m / gap "
                 f"{a['segments'][0]['gap_max']:.2f} m · span B {sp[0]['length']:.0f} m / gap {sp[0]['gap_max']:.2f} m"
                 f" · berm {body:.0f} m³ per 100 m")
@@ -524,7 +529,8 @@ def run(app=None):
         b = mb.run_batch(items, [{"name": str(2025 + t), "year": 2025 + t, "obj": sea(t)} for t in range(5)],
                          dict(required=1.0, reburial_to=1.5, mode="cumulative"))
         sh = mb.workbook_sheets(b, {"mode": "cumulative"})
-        assert len(b["items"]) == 4 and len(sh["Summary"]) == 4 and len(sh["Points"]) > 2000, sh.keys()
+        names = {x["name"]: x for x in sh}
+        assert len(b["items"]) == 4 and len(names["Summary"]["rows"]) == 4 and "Per year" in names, list(names)
         # members 50 m apart: the gap is joined without a cable level and not assessed
         a2 = Route("A", segs[0].xy, z=np.full(len(segs[0].xy), -21.5), meta={"attributes": {"string": "S2"}})
         c2 = Route("C", segs[2].xy, z=np.full(len(segs[2].xy), -21.5), meta={"attributes": {"string": "S2"}})
@@ -709,6 +715,115 @@ def run(app=None):
         return (f"6 photos: cameras ±{cam_err * 100:.1f} cm, dense {len(d):,} pts, median |Δz| "
                 f"{np.median(dz) * 100:.1f} cm · stereo rig median {np.median(dy) * 100:.1f} cm")
 
+    def chart_and_hdmap():
+        import xml.etree.ElementTree as ET
+
+        from pyproj import CRS
+
+        from core import datum as dm
+        from core import hdmap as H
+        from core import nautical as N
+        from core.surface import build_dem
+        from fileio.bag_writer import write_bag
+        from fileio.lanelet2 import write_lanelet2
+        rng = np.random.default_rng(5)
+        n = 60000
+        x, y = rng.uniform(0, 600, n), rng.uniform(0, 400, n)
+        z = -20 + 5 * np.sin(x / 90) + 2 * np.cos(y / 70) + rng.normal(0, 0.05, n)
+        xyz = np.c_[x + 180000, y + 2650000, z]
+        # vertical datum: chart datum 1.8 m below → heights +1.8
+        sep = dm.Separation("constant", value=-1.8)
+        d0 = build_dem(xyz, np.arange(n), 5.0, method="shoal")
+        d1, miss = dm.apply_dem(d0, sep)
+        assert miss == 0 and abs(np.nanmax(d1.z) - np.nanmax(d0.z) - 1.8) < 1e-4
+        # soundings: every dropped sounding has a kept one at least as shoal within the radius
+        sel = N.select_soundings(xyz[:, 0], xyz[:, 1], xyz[:, 2], 20.0)
+        from scipy.spatial import cKDTree
+        tree = cKDTree(xyz[sel, :2])
+        nb = tree.query_ball_point(xyz[:, :2], 20.0)
+        assert all(len(l) and xyz[sel, 2][l].max() >= zz - 1e-9 for l, zz in zip(nb, xyz[:, 2]))
+        cnt = N.depth_contours(d1)
+        ar = N.depth_areas(d1)
+        assert cnt and ar and all(f["attrs"]["DRVAL1"] < f["attrs"]["DRVAL2"] for f in ar)
+        # S-102 (when h5py is installed) and BAG
+        crs = CRS.from_epsg(3826)
+        unc = N.iho_uncertainty(d1.z, "1a")
+        info = []
+        try:
+            import h5py  # noqa: F401
+            from fileio.s102_writer import product_name, write_s102
+            from fileio.validate_s102 import check
+            g = N.product_grid(d1, unc, crs, N.utm_epsg(*N.lonlat_center(d1, crs)), 5.0)
+            assert np.nanmax(g["z"]) <= np.nanmax(d1.z) + 1e-4                # never shoaler-than-source lost
+            p102 = os.path.join(tmp, product_name("TW00", "SELFTEST"))
+            write_s102(p102, g["z"], g["unc"], g["transform"], g["epsg"], 12)
+            errors, _w, _c = check(p102)
+            assert not errors, errors
+            info.append(f"S-102 valid (EPSG:{g['epsg']})")
+        except ImportError:
+            info.append("S-102 skipped (h5py not installed)")
+        from rasterio.transform import from_origin
+        pbag = os.path.join(tmp, "selftest.bag")
+        write_bag(pbag, d1.z, unc, from_origin(d1.x0, d1.ytop, d1.cell, d1.cell), crs, "meanLowerLowWater")
+        import rasterio
+        with rasterio.open(pbag) as ds:
+            assert ds.count == 2 and np.allclose(ds.read(1, masked=True).filled(np.nan)[np.isfinite(d1.z)],
+                                                 d1.z[np.isfinite(d1.z)], atol=1e-4)
+        info.append("BAG")
+        # HD map: lane markings from intensity, poles, lanelets → Lanelet2 XML
+        m = 300000
+        rx, ry = rng.uniform(0, 80, m), rng.uniform(-4, 4, m)
+        rz = 10 + rng.normal(0, 0.01, m)
+        inten = rng.normal(800, 100, m)
+        for yy in (-3.5, 0.0, 3.5):
+            sl = (np.abs(ry - yy) < 0.075) & ((rx % 9) < 3 if yy == 0.0 else True)
+            inten[sl] = rng.normal(2600, 150, sl.sum())
+        stop = (np.abs(rx - 70.0) < 0.2) & (ry > -3.6) & (ry < 0.0)      # stop line across the right lane
+        inten[stop] = rng.normal(2600, 150, stop.sum())
+        keep = ~((rx > 30) & (rx < 36) & (ry > 2.5))                    # occlusion gap in the left solid line
+        rx, ry, rz, inten = rx[keep], ry[keep], rz[keep], inten[keep]
+        m = len(rx)
+        road = np.c_[rx, ry, rz]
+        r = H.extract_markings(road, inten, np.arange(m))
+        subs = sorted(sub for _c, sub, _k in r["lines"])
+        assert subs == ["dashed", "solid", "solid"], subs
+        assert len(r["stop_lines"]) == 1, f"{len(r['stop_lines'])} stop lines"
+        L = H.new_layer()
+        for c_, sub, _k in r["lines"]:
+            H.make_feature(L, "lane_line", c_ + [180000, 2650000, 0], SUBTYPE=sub)
+        ls = sorted(H.line_features(L), key=lambda f: np.median(f["parts"][0][:, 1]))
+        for a, b in zip(ls[:-1], ls[1:]):
+            H.make_lanelet(L, b["attrs"]["FID"], a["attrs"]["FID"], speed=50)
+        widths = [f["attrs"]["WIDTH"] for f in L.features if f["attrs"]["TYPE"] == "lanelet"]
+        assert all(abs(w_ - 3.5) < 0.1 for w_ in widths), widths
+        posm = os.path.join(tmp, "hd.osm")
+        c = write_lanelet2(posm, L, crs)
+        root = ET.parse(posm).getroot()
+        rels = [rr for rr in root.iter("relation") if any(t.get("v") == "lanelet" for t in rr.iter("tag"))]
+        assert c["lanelets"] == 2 and len(rels) == 2 and all(len(list(rr.iter("member"))) == 2 for rr in rels)
+        # LAS export of HD classes (> 31) upgrades a legacy point format to LAS 1.4
+        import laspy
+
+        from fileio.las_reader import read_las
+        from fileio.writers import write_las
+        h = laspy.LasHeader(point_format=1, version="1.2")
+        h.scales = [0.001] * 3
+        lz = laspy.LasData(h)
+        lz.x, lz.y, lz.z = rx[:5000], ry[:5000], rz[:5000]
+        lz.gps_time = np.arange(5000.0)
+        src = os.path.join(tmp, "hd_in.las")
+        lz.write(src)
+        pc_ = read_las(src)
+        pc_.set_class(np.arange(0, 5000, 2), 64)
+        out = os.path.join(tmp, "hd_out.las")
+        write_las(pc_, np.arange(5000), out)
+        o = laspy.read(out)
+        assert o.header.point_format.id == 6 and int(np.asarray(o.classification)[0]) == 64 \
+            and np.allclose(o.gps_time, np.arange(5000.0))
+        return (f"datum +1.80 m · {len(sel)} soundings · {len(cnt)} contours / {len(ar)} depth areas · "
+                + " · ".join(info) + f" · HD: {len(r['lines'])} lane lines + {len(r['stop_lines'])} stop line, 2 lanelets (3.50 m), Lanelet2 · "
+                "LAS 1.4 classes > 31")
+
     for name, fn in (("generate LAZ (laspy + lazrs)", make_data), ("read LAZ", read_laz),
                      ("text export / import", text_roundtrip), ("TIN (Delaunay)", tin), ("DEM (TIN, shoal)", dem),
                      ("GeoTIFF with CRS", geotiff), ("LandXML", landxml), ("LAS export", las_with_crs),
@@ -721,6 +836,7 @@ def run(app=None):
                      ("multi-year cable assessment", multiyear_check),
                      ("meshes / models (planes, piles, LOD2)", meshes_and_models),
                      ("CUBE / IHO S-44 / noise filters", cube_s44_filters),
+                     ("chart products (datum, S-102, BAG) / HD map", chart_and_hdmap),
                      ("photogrammetry SfM-MVS / stereo rig (OpenCV)", photogrammetry),
                      ("project save / open", project_roundtrip), ("3D render (VisPy/OpenGL)", render)):
         step(name, fn)

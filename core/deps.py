@@ -34,6 +34,7 @@ PACKAGES = [
     ("shapefile", "pyshp>=2.3", False, "Shapefile routes, polygons and contours"),
     ("contourpy", "contourpy>=1.0", False, "contour lines"),
     ("openpyxl", "openpyxl>=3.1", False, "Excel workbook export"),
+    ("h5py", "h5py>=3.8", False, "IHO S-102 bathymetric surface export (HDF5)"),
     ("cv2", "opencv-python-headless>=4.8", False, "photogrammetry (SfM-MVS from photos / video, stereo rigs)"),
     ("open3d", "open3d>=0.17", False, "Poisson and ball-pivoting meshes (other mesh methods work without it)"),
 ]

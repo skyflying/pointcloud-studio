@@ -83,6 +83,24 @@ class _LazyDim:
         return self.ref.read_dims(np.asarray(i), [self.dim])[self.dim]
 
 
+def upgrade_format_id(pf_id):
+    """LAS 1.4 point format that keeps every dimension of a legacy one (0–5) and holds classes 0–255."""
+    return {0: 6, 1: 6, 2: 7, 3: 7, 4: 9, 5: 10}.get(int(pf_id), int(pf_id))
+
+
+def convert_chunk(header, points, pf_id):
+    """Records of a legacy point format → LAS 1.4 point format pf_id (laspy.convert, per chunk)."""
+    import laspy
+    las = laspy.LasData(header=header, points=points)
+    out = laspy.convert(las, point_format_id=pf_id, file_version="1.4")
+    src_dims = set(header.point_format.dimension_names)
+    if "scan_angle_rank" in src_dims and "scan_angle" in set(out.point_format.dimension_names) and len(points):
+        # format 0–5: whole degrees; format 6+: 0.006° units (laspy.convert does not map the two)
+        out.scan_angle = np.clip(np.round(np.asarray(points["scan_angle_rank"], float) / 0.006),
+                                 -30000, 30000).astype(np.int16)
+    return out
+
+
 def stream_copy(ref, idx, path, classes=None, compress=False, progress=None):
     """LAS → LAS export of the records idx straight from the source file (all dimensions kept);
     classes: the current classification of every point (edits made in the program)."""
@@ -95,6 +113,11 @@ def stream_copy(ref, idx, path, classes=None, compress=False, progress=None):
         if r.header.point_count != ref.n:
             raise SourceChanged(f"{os.path.basename(ref.path)} no longer has the same points")
         hdr = copy.deepcopy(r.header)
+        up = None
+        if classes is not None and len(idx) and hdr.point_format.id < 6 and int(np.max(classes[idx])) > 31:
+            up = upgrade_format_id(hdr.point_format.id)          # classes above 31 need LAS 1.4 format 6+
+            hdr = convert_chunk(copy.deepcopy(r.header),
+                                laspy.ScaleAwarePointRecord.zeros(0, header=r.header), up).header
         with laspy.open(path, mode="w", header=hdr, do_compress=compress) as w:
             start, done = 0, 0
             for pts in r.chunk_iterator(CHUNK):
@@ -103,6 +126,8 @@ def stream_copy(ref, idx, path, classes=None, compress=False, progress=None):
                 if b > a:
                     loc = idx[a:b] - start
                     sub = pts[loc]
+                    if up is not None:
+                        sub = convert_chunk(r.header, sub, up).points
                     if classes is not None:
                         sub.classification = np.asarray(classes[idx[a:b]], dtype=np.uint8)
                     w.write_points(sub)

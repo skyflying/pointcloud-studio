@@ -96,6 +96,11 @@ class PointCloud:
         cls[idx] = values
         las = self.source.get("las")
         if las is not None and hasattr(las, "points"):    # records in memory (small files): keep them in step
+            vals = np.asarray(values)
+            legacy = las.header.point_format.id < 6          # LAS point formats 0–5 hold classes 0–31 only
+            if legacy and vals.size and int(np.max(vals)) > 31:
+                self.source["classes_above_31"] = True       # export upgrades the file to LAS 1.4 (format 6+)
+                return
             arr = np.array(las.classification)
             arr[idx] = values
             las.classification = arr

@@ -127,6 +127,7 @@ def sample_raster(path, x, y, band=1, crs=None):
         a[np.abs(a) > 1e30] = np.nan                         # BAG / CARIS "no data" 1e6 … 1e38
         if "bag" in (ds.driver or "").lower():
             a[a >= 1e6] = np.nan
+        foot = (col >= -0.5) & (row >= -0.5) & (col <= ds.width - 0.5) & (row <= ds.height - 0.5)
         col -= c_lo
         row -= r_lo
     h, w = a.shape
@@ -134,7 +135,7 @@ def sample_raster(path, x, y, band=1, crs=None):
     r0 = np.floor(row).astype(np.int64)
     fc, fr = col - c0, row - r0
     out = np.full(len(xs), np.nan)
-    ok = (c0 >= -1) & (r0 >= -1) & (c0 < w) & (r0 < h)
+    ok = foot & (c0 >= -1) & (r0 >= -1) & (c0 < w) & (r0 < h)     # inside the raster footprint only
     acc = np.zeros(len(xs))
     wsum = np.zeros(len(xs))
     for dr, dc, wt in ((0, 0, (1 - fr) * (1 - fc)), (0, 1, (1 - fr) * fc), (1, 0, fr * (1 - fc)), (1, 1, fr * fc)):

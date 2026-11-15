@@ -10,7 +10,7 @@ from vispy.util import keys
 
 from render.overlay import SelectionOverlay
 
-MODES = ("navigate", "pick", "box", "lasso", "section", "subset")
+MODES = ("navigate", "pick", "box", "lasso", "section", "subset", "annotate")
 
 
 class SelectionController:
@@ -40,6 +40,14 @@ class SelectionController:
         self._sub_p0 = None
         self.on_subset_draft = None     # callback(p0, p1) or (None, None) to clear
         self.on_subset_finish = None    # callback(p0, p1)
+        # HD map annotation (clicks add vertices; the UI keeps the draft)
+        self.on_annotate_click = None   # callback(canvas pos)
+        self.on_annotate_move = None    # callback(canvas pos)
+        self.on_annotate_finish = None  # callback()
+        self.on_annotate_double = None  # callback(canvas pos): vertex there (if new) + finish
+        self.on_annotate_undo = None    # callback() → True when a vertex was removed
+        self.on_annotate_cancel = None  # callback()
+        self.annotate_has_draft = None  # callback() → bool
         ev = viewer.canvas.events
         ev.mouse_double_click.connect(self._on_double)
         ev.mouse_press.connect(self._on_press)
@@ -72,17 +80,29 @@ class SelectionController:
         self._vdrag = None
         if had and self.on_section_draft:
             self.on_section_draft([], None)
+        if self.mode == "annotate" and self.on_annotate_cancel:
+            self.on_annotate_cancel()
 
     @property
     def section_drawing(self):
+        if self.mode == "annotate":
+            return bool(self.annotate_has_draft and self.annotate_has_draft())
         return bool(self.draft)
 
     def remove_last(self):
+        if self.mode == "annotate":
+            if self.on_annotate_undo:
+                self.on_annotate_undo()
+            return
         if self.draft:
             self.draft.pop()
             self.on_section_draft(self.draft, self.cursor_xy)
 
     def finish_section(self):
+        if self.mode == "annotate":
+            if self.on_annotate_finish:
+                self.on_annotate_finish()
+            return
         if len(self.draft) >= 2 and self.on_section_finish:
             pts = list(self.draft)
             self.draft = []
@@ -102,6 +122,11 @@ class SelectionController:
     def _on_double(self, e):
         if self.mode == "section" and len(self.draft) >= 2:
             self.finish_section()
+        elif self.mode == "annotate" and self.on_annotate_finish:
+            if self.on_annotate_double:                  # the double-click places the last vertex if it is new
+                self.on_annotate_double((float(e.pos[0]), float(e.pos[1])))
+            else:
+                self.on_annotate_finish()
 
     def _on_press(self, e):
         if self.mode == "navigate" or e.button != 1:
@@ -121,6 +146,10 @@ class SelectionController:
         self._path = [self._press]
 
     def _on_move(self, e):
+        if self.mode == "annotate":
+            if self.on_annotate_move:
+                self.on_annotate_move((float(e.pos[0]), float(e.pos[1])))
+            return
         if self.mode == "subset":
             if self._sub_p0 is not None:
                 p1 = self.viewer.screen_to_xy(e.pos)
@@ -148,6 +177,13 @@ class SelectionController:
                 self.overlay.set_path(self._path)
 
     def _on_release(self, e):
+        if self.mode == "annotate" and e.button == 1:
+            p0, self._press = self._press, None
+            if p0 is None or math.hypot(e.pos[0] - p0[0], e.pos[1] - p0[1]) > 3.0:
+                return                                  # a drag, not a click
+            if self.on_annotate_click:
+                self.on_annotate_click((float(e.pos[0]), float(e.pos[1])))
+            return
         if self.mode == "subset" and e.button == 1:
             p0, self._sub_p0 = self._sub_p0, None
             p1 = self.viewer.screen_to_xy(e.pos)

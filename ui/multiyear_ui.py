@@ -1148,62 +1148,69 @@ class MultiYearMixin:
         self.statusBar().showMessage("Saved per-year, re-burial stretches, segments, stations and settings CSV", 10000)
 
     def _my_write_csv(self, res, base):
-        """CSV files of one result: per year, re-burial stretches, interventions, segments, stations, settings."""
-        self._write_rows(base + "_per_year.csv", res["table"])
-        self._write_rows(base + "_reburial_stretches.csv", res["first"] or [{"note": "no re-burial needed"}])
-        if res["summary"]["mode"] == "cumulative":
-            self._write_rows(base + "_interventions.csv", res["interventions"] or [{"note": "no re-burial needed"}])
-        self._write_rows(base + "_segments.csv", res["segments"] or [{"note": "no segments"}])
+        """CSV files of one result with the report's columns (summary, per year, re-burial stretches,
+        interventions, stretches per year, settings) + the stations (KP, E, N, cable top, seabed and cover of
+        every year)."""
+        import csv
+        from core import multiyear_batch as mb
+        from core.report_xlsx import _val
+        one = {"items": [mb.compact(res["route"], "cable", res)], "errors": []}
+        for sh in mb.workbook_sheets(one, self._my_settings()):
+            f = f"{base}_{sh['name'].replace(' ', '_').replace('-', '').lower()}.csv"
+            with open(f, "w", encoding="utf-8-sig", newline="") as fh:
+                w = csv.writer(fh)
+                w.writerow([c[1] for c in sh["columns"]])
+                for r in sh["rows"]:
+                    w.writerow(["" if _val(r.get(k)) is None else _val(r.get(k)) for k, _h, _f in sh["columns"]])
         st = res["st"]
-        rows = []
-        for i in range(len(st["ch"])):
-            r = {"kp": float(st["kp"][i]), "x": float(st["x"][i]), "y": float(st["y"][i]),
-                 "cable_top": float(res["cable_top"][i])}
-            for y, se in res["series"].items():
-                r[f"seabed_{y}"] = float(se["seabed"][i])
-                r[f"cover_{y}"] = float(se["cover"][i])
-            rows.append(r)
-        self._write_rows(base + "_stations.csv", rows)
-        with open(base + "_settings.csv", "w", encoding="utf-8", newline="\n") as fh:
-            fh.write("item,value\n")
-            fh.write(f"cable,\"{res['route']}\"\n")
-            for k, v in res["params"].items():
-                fh.write(f"{k},{v}\n")
-            for k, n in getattr(self, "_my_names", {}).items():
-                fh.write(f"{k},\"{n}\"\n")
-            fh.write("assumption,\"" + ("cumulative: re-burial carried out in the year it is needed, later years use "
-                                        "the lowered cable" if res["summary"]["mode"] == "cumulative" else
-                                        "independent: every year against the original cable level")
-                     + "; cable does not sag (spans are upper estimates)\"\n")
+        cols = [("KP (km)", st["kp"]), ("E", st["x"]), ("N", st["y"]), ("Cable top, initial (m)", res["cable_top"])]
+        for y, se in res["series"].items():
+            cols += [(f"Seabed {y} (m)", se["seabed"]), (f"Cover {y} (m)", se["cover"])]
+        with open(base + "_stations.csv", "w", encoding="utf-8-sig", newline="") as fh:
+            fh.write(",".join(c[0] for c in cols) + "\n")
+            for i in range(len(st["ch"])):
+                fh.write(",".join("" if not np.isfinite(v[i]) else f"{float(v[i]):.4f}" for _n, v in cols) + "\n")
 
     @staticmethod
     def _my_gis_groups(res, item=None):
-        """{layer: features} of one result; item: added as attribute ITEM (batch)."""
+        """{layer: features} of one result, one layer per type (SHP-safe fields): exposed, free_span,
+        short_span, reburial_needed (per year), reburial_stretches (first year), interventions, cable."""
         st = res["st"]
         xy = np.column_stack([st["x"], st["y"]])
         top = np.nan_to_num(res["cable_top"])
-        tag = {} if item is None else {"ITEM": str(item)}
+        cab = str(item if item is not None else res["route"])
+
+        def num(v, d=3):
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return None
+            return round(v, d) if np.isfinite(v) else None
 
         def feat(sg, attrs):
             i0 = sg["i0"]
             i1 = min(max(sg["i1"], i0 + 1), len(xy) - 1)
             return {"type": "LineString", "parts": [np.column_stack([xy[i0:i1 + 1], top[i0:i1 + 1]])],
-                    "attrs": {**tag, **attrs}}
-        segs = [feat(s, {"YEAR": s["year"], "DATA": s["data"], "TYPE": s["type"], "KP_FROM": s["kp_from"],
-                         "KP_TO": s["kp_to"], "LENGTH_M": s["length_m"], "VALUE_M": s["value_m"]})
-                for s in res["segments"]]
-        first = [feat(s, {"FIRST_YEAR": s["first_year"], "KP_FROM": s["kp_from"], "KP_TO": s["kp_to"],
-                          "LENGTH_M": s["length_m"], "FIRST_EXP": s["first_exposed"], "FIRST_SPAN": s["first_span"]})
-                 for s in res["first"]]
-        groups = {"segments": segs, "reburial_stretches": first}
+                    "attrs": {"CABLE": cab, **attrs, "KP_FROM": num(sg["kp_from"], 4), "KP_TO": num(sg["kp_to"], 4),
+                              "LENGTH_M": num(sg.get("length_m", sg.get("length")), 2)}}
+        groups = {"exposed": [], "free_span": [], "short_span": [], "reburial_needed": []}
+        names = {"exposed": "exposed", "free span": "free_span", "short span": "short_span",
+                 "re-burial": "reburial_needed"}
+        field = {"exposed": "MIN_COV_M", "free_span": "MAX_GAP_M", "short_span": "MAX_GAP_M",
+                 "reburial_needed": "LOWER_M"}
+        for sg in res["segments"]:
+            g = names.get(sg["type"])
+            if g:
+                groups[g].append(feat(sg, {"YEAR": int(sg["year"]), "DATA": sg.get("data"),
+                                           field[g]: num(sg.get("value_m"))}))
+        groups["reburial_stretches"] = [feat(s, {"FIRST_YEAR": s["first_year"], "FIRST_EXP": s.get("first_exposed"),
+                                                 "FIRST_SPAN": s.get("first_span")}) for s in res["first"]]
         if res.get("interventions"):
-            groups["interventions"] = [feat(s, {"YEAR": s["year"], "KP_FROM": s["kp_from"], "KP_TO": s["kp_to"],
-                                                "LENGTH_M": s["length_m"], "LOWER_MAX": s["lowering_max"],
-                                                "COVER_AFT": s["cover_after"], "HOURS": s["hours"],
-                                                "BEYOND": s["beyond_trencher"]}) for s in res["interventions"]]
-        # the assessed cable itself (so the result can be read without the route file)
+            groups["interventions"] = [feat(s, {"YEAR": s["year"], "LOWER_MAX": num(s["lowering_max"]),
+                                                "COVER_AFT": num(s["cover_after"]), "HOURS": num(s["hours"], 2),
+                                                "BEYOND": s["beyond_trencher"] or ""}) for s in res["interventions"]]
         groups["cable"] = [{"type": "LineString", "parts": [np.column_stack([xy, top])],
-                            "attrs": {**tag, "NAME": str(res["route"]), "LENGTH_M": float(res["summary"]["length"])}}]
+                            "attrs": {"CABLE": cab, "LENGTH_M": num(res["summary"]["length"], 2)}}]
         return groups
 
     def multiyear_export_gis(self):
@@ -1212,10 +1219,11 @@ class MultiYearMixin:
         from fileio import vector_io
         if self._multiyear_result is None and self._multiyear_batch is None:
             return
-        path, flt = QFileDialog.getSaveFileName(self, "Export segments (GIS)", "multiyear.gpkg", vector_io.WRITE_FILTER)
+        path, flt = QFileDialog.getSaveFileName(self, "Export stretches (GIS)", "multiyear.shp",
+                                                "Shapefile (*.shp);;" + vector_io.WRITE_FILTER)
         if not path:
             return
-        path = vector_io.ext_from_filter(path, flt)
+        path = vector_io.ext_from_filter(path, flt) if not path.lower().endswith(".shp") else path
         batch = self._multiyear_batch is not None
         groups = {}
         n = 0
@@ -1241,7 +1249,33 @@ class MultiYearMixin:
                            "original cable level") + "; cable does not sag (spans are upper estimates)"
         from core.version import APP_NAME, __version__
         p["program"] = f"{APP_NAME} {__version__}"
-        return p
+        # report: readable names, and only the settings that apply
+        if p.get("cable_level") != "isbl":
+            for k in ("req_sandwave", "req_other", "sw_slope_deg", "sw_isbl_dsbl", "peak_deg", "sw_grid"):
+                p.pop(k, None)
+        if p.get("action") != "lower_by":
+            p.pop("lower_by", None)
+        if not p.get("cost_per_m"):
+            for k in ("cost_per_m", "discount_rate", "base_year"):
+                p.pop(k, None)
+        if p.get("mode") != "cumulative":
+            for k in ("reburial_to", "action", "lower_by", "settle_short", "max_cover", "rate"):
+                p.pop(k, None)
+        labels = {"mode": "Mode", "required": "Re-burial trigger: cover (m)", "reburial_to": "Re-bury to cover (m)",
+                  "target": "Target cover (m)", "diameter": "Cable diameter (m)", "gap_min": "Free span: minimum gap (m)",
+                  "len_min": "Free span: minimum length (m)", "step": "Station step (m)", "width": "Seabed corridor ± (m)",
+                  "merge_gap": "Join stretches closer than (m)", "min_len": "Ignore joined stretches shorter than (m)",
+                  "max_cover": "Trencher: maximum cover (m)", "rate": "Trencher progress (m/h)", "kp_range": "KP range",
+                  "trigger": "Re-burial trigger", "min_run": "Minimum continuous stretch (m)",
+                  "settle_short": "Short exposures settle onto the seabed", "action": "Re-burial action",
+                  "lower_by": "Lower the cable by (m)", "cost_per_m": "Cost per metre", "discount_rate": "Discount rate",
+                  "base_year": "Discounting base year", "cable_level": "Initial cable level",
+                  "req_sandwave": "Required burial, sand-wave areas (m)", "req_other": "Required burial, elsewhere (m)",
+                  "sw_slope_deg": "Sand wave: ISBL slope above (°)", "sw_isbl_dsbl": "Sand wave: ISBL − DSBL above (m)",
+                  "peak_deg": "Peak shaving: maximum slope (°)", "sw_grid": "Sand-wave grid (m)", "dsbl": "DSBL",
+                  "isbl": "ISBL", "years": "Years", "seabed_datasets": "Seabed datasets", "assumption": "Assumption",
+                  "program": "Program"}
+        return {labels.get(k, k): v for k, v in p.items()}
 
     def _my_batch_or_single(self):
         from core import multiyear_batch as mb

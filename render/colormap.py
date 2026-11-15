@@ -49,6 +49,23 @@ _CLASS_COLORS = {
 }
 
 
+def _hd_class_colors():
+    """HD map classes (core.hdmap.CLASSES, user-definable codes 64+ and road surface 11 …)."""
+    try:
+        from core.hdmap import CLASSES
+    except Exception:  # noqa: BLE001
+        return {}
+    out = {}
+    for code, (_k, _lab, hexc) in CLASSES.items():
+        if code >= 64 or code in (13, 15):
+            h = hexc.lstrip("#")
+            out[code] = tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+    return out
+
+
+_CLASS_COLORS.update(_hd_class_colors())
+
+
 def _lut(stops, n=256):
     stops = np.asarray(stops, dtype=np.float64)
     t = np.linspace(0.0, 1.0, n)

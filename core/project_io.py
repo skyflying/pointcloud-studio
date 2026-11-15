@@ -46,6 +46,8 @@ def save_project(path, project, sections=(), view=None, subsets=None):
                  "survey_date": getattr(d, "survey_date", None), "simulated": bool(getattr(d, "simulated", False))}
         if getattr(d, "style", None):
             entry["style"] = dict(d.style)
+        if getattr(d, "vdatum", None):
+            entry["vdatum"] = dict(d.vdatum)
         if d.path:
             entry["path"] = os.path.abspath(d.path)
             try:
@@ -67,6 +69,10 @@ def save_project(path, project, sections=(), view=None, subsets=None):
             continue
         if d.kind == "vector":                              # stored inline (GeoJSON-like)
             entry["vector"] = d.obj.to_json()
+            vm = {k: v for k, v in (getattr(d.obj, "meta", None) or {}).items()
+                  if isinstance(v, (bool, int, float, str))}
+            if vm:
+                entry["vector_meta"] = vm
             out.append(entry)
             continue
         if d.kind == "structure":                           # small: stored inline

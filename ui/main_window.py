@@ -42,6 +42,8 @@ from ui.land_mixin import LandMixin
 from ui.multiyear_ui import MultiYearMixin
 from ui.reconstruct_mixin import ReconstructMixin
 from ui.s44_ui import S44Mixin
+from ui.nautical_ui import NauticalMixin
+from ui.hdmap_ui import HdMapMixin
 from ui.subset_mixin import ClassifyMixin, FilterMixin, RouteMixin, SubsetMixin
 from ui.export_dialog import ExportDialog
 from ui.import_dialog import XyzImportDialog
@@ -60,6 +62,7 @@ MODE_HINTS = {
     "section": "Section · Click to add vertices · Double-click or Enter to finish · Backspace removes last · Esc cancels · Drag a vertex to edit",
     "subset": "Subset · Drag the long axis of a subset box in plan view (width in the Subset panel) · Esc cancels",
     "lasso": "Lasso select · Draw a freehand outline · Shift add · Ctrl subtract · Wheel zoom · Middle drag pan · V to rotate",
+    "annotate": "HD map annotation · Click to place vertices (snapped to points) · Double-click or Enter to finish · Backspace removes last · Esc cancels",
 }
 XYZ_EXT = (".xyz", ".asc", ".txt", ".csv", ".pts")
 LAS_EXT = (".las", ".laz")
@@ -124,7 +127,7 @@ class EmptyState(QWidget):
 
 
 # ---------------------------------------------------------------- main window
-class MainWindow(S44Mixin, ReconstructMixin, MultiYearMixin, LandMixin, SeabedMixin, CableMixin, ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteMixin, FilterMixin, SubsetMixin, ProjectFileMixin, ProjectMixin, QMainWindow):
+class MainWindow(HdMapMixin, NauticalMixin, S44Mixin, ReconstructMixin, MultiYearMixin, LandMixin, SeabedMixin, CableMixin, ClassifyMixin, ContourMixin, DesignMixin, AnalysisMixin, RouteMixin, FilterMixin, SubsetMixin, ProjectFileMixin, ProjectMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
@@ -212,7 +215,9 @@ class MainWindow(S44Mixin, ReconstructMixin, MultiYearMixin, LandMixin, SeabedMi
                                     ("box", "Box", "B", "Rectangle selection"),
                                     ("lasso", "Lasso", "L", "Freehand selection"),
                                     ("section", "Section", "S", "Draw a cross-section line"),
-                                    ("subset", "Subset", "U", "Subset editor: drag a box, edit side views, page along")):
+                                    ("subset", "Subset", "U", "Subset editor: drag a box, edit side views, page along"),
+                                    ("annotate", "Annotate", "A", "HD map annotation: draw lane lines, curbs, poles … "
+                                                                  "on the point cloud")):
             a = QAction(icon(key), label, self, shortcut=sc, checkable=True,
                         toolTip=f"{label} ({sc}) — {tip}")
             a.triggered.connect(lambda _=False, k=key: self.set_mode(k))
@@ -277,6 +282,21 @@ class MainWindow(S44Mixin, ReconstructMixin, MultiYearMixin, LandMixin, SeabedMi
         self.act_dem = QAction("Create DEM…", self, shortcut="Ctrl+G", triggered=self.create_dem)
         self.act_exp_tin = QAction(icon("export"), "Export TIN…", self, triggered=self.export_tin)
         self.act_exp_dem = QAction(icon("export"), "Export DEM…", self, triggered=self.export_dem)
+        # chart (navigation) products
+        self.act_vdatum = QAction("Vertical Datum (to Chart Datum)…", self, triggered=self.open_vertical_datum)
+        self.act_vdatum.setToolTip("Shift heights to a chart datum (LAT, MLLW …): constant, raster or table")
+        self.act_grid_product = QAction("Export Bathymetric Surface (S-102 / BAG)…", self,
+                                        triggered=self.open_grid_product)
+        self.act_chart_layers = QAction("Chart Layers (Soundings, Depth Contours, Depth Areas)…", self,
+                                        triggered=self.open_chart_layers)
+        # HD map
+        self.act_hd_new = QAction("New HD Map Layer", self, triggered=self.hd_new_layer)
+        self.act_hd_annotate = QAction("Annotate Map Features…", self, triggered=lambda: self.hd_annotate(True))
+        self.act_hd_label = QAction("Label Selected Points (HD Classes)…", self, shortcut="Ctrl+Shift+K",
+                                    triggered=self.hd_label_points)
+        self.act_hd_marks = QAction("Extract Lane Markings…", self, triggered=self.hd_extract_markings)
+        self.act_hd_poles = QAction("Extract Poles…", self, triggered=self.hd_extract_poles)
+        self.act_hd_export = QAction("Export HD Map (Lanelet2 / SHP / GPKG)…", self, triggered=self.hd_export)
         self.act_s44 = QAction("IHO S-44 Check…", self, triggered=self.open_s44_dialog)
         self.act_s44.setToolTip("Compliance of soundings with an IHO S-44 order: TPU, residuals, crosslines, coverage")
         self.act_photo = QAction("Photos / Video → Point Cloud (SfM-MVS)…", self, shortcut="Ctrl+Shift+P",
@@ -349,9 +369,18 @@ class MainWindow(S44Mixin, ReconstructMixin, MultiYearMixin, LandMixin, SeabedMi
         m_an.addAction(self.act_contours)
         m_an.addSeparator()
         m_an.addAction(self.act_s44)
+        m_chart = self.menuBar().addMenu("&Chart")
+        m_chart.addAction(self.act_vdatum)
+        m_chart.addSeparator()
+        m_chart.addAction(self.act_grid_product)
+        m_chart.addAction(self.act_chart_layers)
         m_land = self.menuBar().addMenu("&Land")
         for a in self.land_acts:
             m_land.addAction(a)
+        m_hd = self.menuBar().addMenu("HD &Map")
+        for a in (self.act_hd_new, self.act_hd_annotate, None, self.act_hd_label, self.act_hd_marks,
+                  self.act_hd_poles, None, self.act_hd_export):
+            m_hd.addSeparator() if a is None else m_hd.addAction(a)
         m_cab = self.menuBar().addMenu("Lines && &Structures")
         m_cab.addAction(self.act_route)
         m_cab.addAction(self.act_structs)
@@ -740,6 +769,9 @@ class MainWindow(S44Mixin, ReconstructMixin, MultiYearMixin, LandMixin, SeabedMi
     # ---------- selection ----------
     def set_mode(self, mode):
         # the camera is left exactly as the user set it (no automatic switch to top view)
+        if mode == "annotate" and not getattr(self, "_hd_entering", False):
+            self.hd_annotate(True)                       # sets up the panel, then comes back here
+            return
         self.mode_actions[mode].setChecked(True)
         self.selector.set_mode(mode)
         self.mode_label.setText(key_text(MODE_HINTS[mode]))
@@ -933,8 +965,8 @@ class MainWindow(S44Mixin, ReconstructMixin, MultiYearMixin, LandMixin, SeabedMi
         self.act_redo.setIconText("Redo")
         self.act_undo.setToolTip(f"Undo {self.history.undo_label} (Ctrl+Z)" if self.history.undo_label else "Nothing to undo")
         self.act_redo.setToolTip(f"Redo {self.history.redo_label} (Ctrl+Y)" if self.history.redo_label else "Nothing to redo")
-        self.act_delete.setEnabled(loaded and ((self.sel is not None and self.sel.count > 0)
-                                               or self.selector.section_drawing))
+        self.act_delete.setEnabled((loaded and self.sel is not None and self.sel.count > 0)
+                                   or self.selector.section_drawing)
         self.act_restore_all.setEnabled(has_trash)
         self.act_empty.setEnabled(has_trash)
 

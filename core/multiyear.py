@@ -185,8 +185,9 @@ def assess(route, years, diameter=0.2, gap_min=0.1, len_min=10.0, target=1.5, re
                "below_target_m": float(w[below].sum()), "exposed_m": float(w[exposed].sum()),
                "exposed_segments": len(exp_segs), "spans": len(long_spans),
                "span_length_m": float(sum(s["length"] for s in long_spans)),
-               "longest_span_m": float(max((s["length"] for s in span_segs), default=0.0)),
-               "max_gap": float(np.nanmax(gap)) if span_m.any() else 0.0,
+               # longest span / largest gap of the free spans (≥ len_min), as the span count and length
+               "longest_span_m": float(max((s["length"] for s in long_spans), default=0.0)),
+               "max_gap": float(max((s.get("gap_max", 0.0) for s in long_spans), default=0.0)),
                "reburial_m": L_work, "reburial_segments": len(work_segs),
                "max_lowering": float(lower.max()) if need.any() else 0.0,
                "mean_lowering": float((lower * w)[need].sum() / w[need].sum()) if need.any() else 0.0}
@@ -246,7 +247,8 @@ def assess(route, years, diameter=0.2, gap_min=0.1, len_min=10.0, target=1.5, re
                     did_mask[sl] = True
             top = np.where(lowered, new, top)
             times += did_mask.astype(int)
-            row["cost"] = done_len * cost_per_m if cost_per_m else 0.0
+            if cost_per_m:
+                row["cost"] = done_len * cost_per_m
             cum_len += done_len
             cum_h += done_len / rate if rate else 0.0
             row["reburied_m"] = done_len

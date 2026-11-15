@@ -269,6 +269,7 @@ def dob_analysis(route, seabed, step=1.0, target=1.5, bin_m=100.0, width=0.5, kp
     valid = np.isfinite(dob)
     fail = valid & (dob < target - EPS)
     segs = segments_from(st, fail, dob, "dob", "min", route)
+    exposed = segments_from(st, valid & (dob < -EPS), dob, "dob", "min", route)     # cable above the seabed
     gaps = [g for g in segments_from(st, ~valid, route=route) if g["length"] > step * 1.5]
     cols = {"dob": dob, "seabed": sb, "cable_top": top}
     if rep is not None:
@@ -290,7 +291,8 @@ def dob_analysis(route, seabed, step=1.0, target=1.5, bin_m=100.0, width=0.5, kp
         summary["vs_reported_max_abs"] = float(np.abs(dd).max()) if len(dd) else np.nan
     _report(progress, 1.0)
     return {"kind": "dob", "route": route.name, "st": st, "series": {"seabed": sb, "cable_top": top, "dob": dob,
-            "dob_reported": rep}, "segments": segs, "gaps": gaps, "bins": bins, "summary": summary,
+            "dob_reported": rep}, "segments": segs, "exposed_segments": exposed, "gaps": gaps, "bins": bins,
+            "summary": summary,
             "params": {"step": step, "target": target, "bin_m": bin_m, "width": width}}
 
 
@@ -369,11 +371,14 @@ def _spans(route, st, gap, gap_min, len_min, bin_m, extra):
     bins = bin_table(st, bin_m, cols)
     valid = np.isfinite(gap)
     long_ = [s for s in segs if s["flag"] == "SPAN"]
+    # longest span and largest gap are those of the free spans (≥ len_min); a negative "largest gap" of a
+    # buried cable, or a short gap counted as the longest span, would be misleading
     summary = {"length": _length(st, np.ones(len(gap), bool)), "covered": _length(st, valid),
                "spans": len(long_), "short_spans": len(segs) - len(long_),
                "span_length_total": float(sum(s["length"] for s in long_)),
-               "longest": max((s["length"] for s in segs), default=0.0),
-               "gap_max": float(np.nanmax(gap)) if valid.any() else np.nan}
+               "longest": max((s["length"] for s in long_), default=0.0),
+               "gap_max": max((s["gap_max"] for s in long_ if "gap_max" in s), default=np.nan),
+               "longest_short": max((s["length"] for s in segs if s["flag"] != "SPAN"), default=0.0)}
     summary["coverage_pct"] = 100.0 * summary["covered"] / summary["length"] if summary["length"] else 0.0
     return {"kind": "span", "route": route.name, "st": st, "series": {"gap": gap, **extra}, "segments": segs,
             "bins": bins, "summary": summary}

@@ -28,7 +28,10 @@ class VectorLayer:
         return c
 
     def bounds(self):
-        allp = np.vstack([p[:, :2] for f in self.features for p in f["parts"]])
+        parts = [p[:, :2] for f in self.features for p in f["parts"] if len(p)]
+        if not parts:                                    # empty layer (e.g. a new HD map layer): no extent
+            return np.array([np.nan, np.nan]), np.array([np.nan, np.nan])
+        allp = np.vstack(parts)
         return allp.min(axis=0), allp.max(axis=0)
 
     def z_range(self):

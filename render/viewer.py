@@ -134,6 +134,15 @@ class PointCloudViewer:
         self.vec_text.set_gl_state("translucent", depth_test=False)
         self.vec_text.order = 6
         self.vec_text.visible = False
+        # HD map annotation draft (vertices being placed)
+        self.ann_lines = scene.visuals.Line(parent=self.view.scene, method="gl", width=2.5)
+        self.ann_lines.set_gl_state("translucent", depth_test=False)
+        self.ann_lines.order = 9
+        self.ann_lines.visible = False
+        self.ann_verts = scene.visuals.Markers(parent=self.view.scene)
+        self.ann_verts.set_gl_state("translucent", depth_test=False)
+        self.ann_verts.order = 10
+        self.ann_verts.visible = False
         # analysis results along routes (DoB / free spans / berm): coloured polylines + labels
         self.ana_lines = scene.visuals.Line(parent=self.view.scene, method="gl", width=5.0)
         self.ana_lines.set_gl_state("translucent", depth_test=False)
@@ -622,6 +631,7 @@ class PointCloudViewer:
         for m in ([self.markers, self.trash_markers, self.sel_markers, self.sec_lines, self.sec_verts]
                   + [l.mesh for l in self.surfaces.values()] + [r["markers"] for r in self.refs.values()]
                   + list(self.contours.values()) + list(self.contour_labels.values())
+                  + [self.ann_lines, self.ann_verts]
                   + [self.route_lines, self.route_text, self.ana_lines, self.ana_text, self.str_lines, self.vec_text,
                      self.str_text, self.vec_lines]):
             m.transform = STTransform(scale=(1.0, 1.0, self.z_scale))
@@ -819,6 +829,50 @@ class PointCloudViewer:
         else:
             self.sec_verts.visible = False
         self.canvas.update()
+
+    def set_annotation_draft(self, pts, cursor=None, color="#ffd23d", closed=False):
+        """pts: (N, 3) world XYZ of the placed vertices (NaN Z = draped); cursor: world XYZ of the rubber band."""
+        from vispy.color import Color
+        if self.origin is None or pts is None or (len(pts) == 0 and cursor is None):
+            self.ann_lines.visible = self.ann_verts.visible = False
+            self.canvas.update()
+            return
+        P = np.asarray(pts, float).reshape(-1, 3)
+        line = P if cursor is None else np.vstack([P, np.asarray(cursor, float)[None, :3]])
+        if closed and len(line) >= 3:
+            line = np.vstack([line, line[:1]])
+        rgba = np.array(Color(color).rgba, np.float32)
+        tr = STTransform(scale=(1.0, 1.0, self.z_scale))
+        if len(line) >= 2:
+            pairs = self._z_pairs(line[:, :2], line[:, 2])
+            self.ann_lines.set_data(pos=pairs.astype(np.float32), color=np.tile(rgba, (len(pairs), 1)),
+                                    connect="segments")
+            self.ann_lines.transform = tr
+            self.ann_lines.visible = True
+        else:
+            self.ann_lines.visible = False
+        if len(P):
+            o = self.origin
+            loc = np.column_stack([P[:, 0] - o[0], P[:, 1] - o[1], P[:, 2] - o[2]])
+            miss = ~np.isfinite(loc[:, 2])
+            if miss.any():
+                loc[miss, 2] = self._drape_z(loc[miss, 0], loc[miss, 1])
+            self.ann_verts.set_data(loc.astype(np.float32), face_color=rgba, edge_color=(0, 0, 0, 1), edge_width=1,
+                                    size=8)
+            self.ann_verts.transform = tr
+            self.ann_verts.visible = True
+        else:
+            self.ann_verts.visible = False
+        self.canvas.update()
+
+    def screen_to_world(self, pos):
+        """World XYZ under a canvas position on the displayed terrain (NaN Z when nothing is under it)."""
+        xy = self.screen_to_xy(pos)
+        if xy is None:
+            return None
+        lx, ly = xy[0] - self.origin[0], xy[1] - self.origin[1]
+        z = self._ground_local(np.array([lx]), np.array([ly]))[0]
+        return np.array([xy[0], xy[1], z + self.origin[2] if np.isfinite(z) else np.nan])
 
     # ---------- contour layers ----------
     def set_contours(self, cid, cs, depth=False):
@@ -1070,8 +1124,18 @@ class PointCloudViewer:
             rgba = np.array(Color(st.get("color") or (color if color is not None else
                                                       ls.color_of("vector", st))).rgba, np.float32)
             key = ls.label_key("vector", st)
-            for f in lay.features:
+            cmap = st.get("color_map") or {}
+            cattr = st.get("color_attr", "TYPE")
+            feats = lay.features
+            if cmap:                                           # areas (lanelets) under the lines that bound them
+                feats = sorted(feats, key=lambda f_: f_["type"] != "Polygon")
+            for f in feats:
                 anchor = None
+                fr = rgba
+                if cmap:                                       # per-feature colour (e.g. HD map feature types)
+                    cv = cmap.get(str((f.get("attrs") or {}).get(cattr)))
+                    if cv:
+                        fr = np.array(Color(cv).rgba, np.float32)
                 for p in f["parts"]:
                     p = np.asarray(p, float)
                     if f["type"] == "Point":
@@ -1079,7 +1143,7 @@ class PointCloudViewer:
                         z = p[0, 2] if p.shape[1] >= 3 and abs(p[0, 2]) > 1e-9 else np.nan
                         for q in (np.array([(x - arm, y), (x + arm, y)]), np.array([(x, y - arm), (x, y + arm)])):
                             segs.append((q, np.full(2, z)))
-                            cols.append(rgba)
+                            cols.append(fr)
                         anchor = anchor or (x + arm, y, z)
                         continue
                     q = p if f["type"] != "Polygon" or np.array_equal(p[0, :2], p[-1, :2]) else np.vstack([p, p[:1]])
@@ -1087,7 +1151,7 @@ class PointCloudViewer:
                         continue
                     z = q[:, 2] if q.shape[1] >= 3 and np.any(np.abs(q[:, 2]) > 1e-9) else np.full(len(q), np.nan)
                     segs.append((q[:, :2], z))
-                    cols.append(rgba)
+                    cols.append(fr)
                     if anchor is None:
                         if f["type"] == "Polygon":
                             c = q[:-1, :2].mean(axis=0)
@@ -1101,7 +1165,7 @@ class PointCloudViewer:
                         labels.append(txt)
                         lp.append(anchor[:2])
                         lz.append(anchor[2])
-                        lcol.append(rgba)
+                        lcol.append(fr)
         if not segs:
             self.vec_lines.visible = self.vec_text.visible = False
             self.canvas.update()

@@ -557,7 +557,7 @@ class ProjectMixin:
         dlg = LayerStyleDialog(ds, self)
         if dlg.exec() != QDialog.Accepted:
             return
-        ds.style = dlg.style()
+        ds.style = {**(ds.style or {}), **dlg.style()}       # keep other style keys (e.g. HD map colour map)
         self._set_dirty(True)
         self._show_routes()
         self._refresh_data_card()
@@ -819,7 +819,7 @@ def _load_project_sources(doc, project_path, sources, progress=None):
         try:
             if e["kind"] == "vector":
                 from core.vector_layer import VectorLayer
-                out.append((e, VectorLayer(e["vector"]), None))
+                out.append((e, VectorLayer(e["vector"], meta=dict(e.get("vector_meta") or {})), None))
                 if progress:
                     progress((i + 1) / n)
                 continue
@@ -873,6 +873,11 @@ def _load_project_sources(doc, project_path, sources, progress=None):
                         obj.source["reprojected_from"] = crsmod.label(s)
                     else:
                         obj = reproject_dem(obj, s, t)
+                vd = e.get("vdatum") or {}
+                if vd.get("in_place") and e["kind"] == "points":     # heights shifted to another vertical datum
+                    from core import datum as datum_mod
+                    datum_mod.apply_xyz(obj.xyz, datum_mod.Separation.from_spec(vd.get("separation"), t))
+                    obj.recompute_bbox()
             out.append((e, obj, None))
         except Exception as ex:  # noqa: BLE001
             out.append((e, None, f"{e['name']}: {type(ex).__name__}: {ex}"))
@@ -1066,7 +1071,7 @@ class ProjectFileMixin:
                          opacity=e.get("opacity", 1.0), import_opts=e.get("import_opts") or {},
                          edit_version=e.get("edit_version", 0), z_flipped=bool(e.get("z_flipped", False)),
                          survey_date=e.get("survey_date"), simulated=bool(e.get("simulated", False)),
-                         style=dict(e.get("style") or {}))
+                         style=dict(e.get("style") or {}), vdatum=dict(e.get("vdatum") or {}))
             proj.add(ds)
             idmap[e["id"]] = ds.id
             if e.get("derived_from") is not None:

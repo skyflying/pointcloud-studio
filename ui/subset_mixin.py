@@ -245,6 +245,8 @@ class SubsetMixin:
         if self.selector.section_drawing:
             self.selector.remove_last()
             return
+        if self.selector.mode == "annotate":                 # Backspace / Delete never reject points while drawing
+            return
         if self.pc is None or self.sel is None or self.sel.count == 0 or self.selector.drawing:
             return
         if self._effective_reject_mode() == "trash":

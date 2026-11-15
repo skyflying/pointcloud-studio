@@ -41,6 +41,8 @@ class Dataset:
     survey_date: str | None = None  # 'YYYY-MM-DD' — epochs for scour / sand-wave / multi-year analyses
     simulated: bool = False         # a modelled (predicted) seabed rather than a survey
     style: dict = field(default_factory=dict)   # routes / vector layers / structures: {"color", "label", "kp"}
+    vdatum: dict = field(default_factory=dict)  # vertical datum of the heights: {"code", "name", "separation",
+    #                                             "in_place"} (core.datum); in_place: re-applied when reopened
     id: int = 0
     # editing state (point clouds only)
     sel: Selection | None = None

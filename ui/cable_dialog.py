@@ -415,10 +415,10 @@ class CableDialog(QDialog):
         self.btn_secs = QPushButton("Add check sections")
         self.btn_secs.setToolTip("Rock berm: cross-sections at the chosen interval, shown in the profile panel")
         self.btn_clear = QPushButton("Clear 3D")
-        self.btn_batch = QPushButton("Export batch…")
-        self.btn_batch.setToolTip("Batch: Excel workbook (summary, segments, KP bins of every cable) and a chart per "
-                                  "cable")
-        self.btn_batch.clicked.connect(cb.cable_export_batch)
+        self.btn_batch = QPushButton("Export report…")
+        self.btn_batch.setToolTip("Formatted Excel report (summary, stretches, KP bins, settings) and a chart per cable "
+                                  "— the cable shown, or every cable of a batch")
+        self.btn_batch.clicked.connect(cb.cable_export_report)
         self.btn_batch.setEnabled(False)
         for b, fn in ((self.btn_csv, cb.cable_export_csv), (self.btn_shp, cb.cable_export_shp),
                       (self.btn_png, cb.cable_save_chart), (self.btn_layers, cb.cable_add_layers),
@@ -800,7 +800,7 @@ class CableDialog(QDialog):
             f"<span style='color:{C['muted']}'>{a}:</span> {b}" for a, b in rows))
         self._chart()
         self._fill_table()
-        for b in (self.btn_csv, self.btn_shp, self.btn_png, self.btn_clear):
+        for b in (self.btn_csv, self.btn_shp, self.btn_png, self.btn_clear, self.btn_batch):
             b.setEnabled(True)
         self.btn_layers.setEnabled(k == "berm")
         self.btn_secs.setEnabled(k == "berm" and bool(res.get("sections")))
@@ -827,6 +827,7 @@ class CableDialog(QDialog):
                                                                  f"({'; '.join(batch['errors'][:3])})" if e else "")
                              + " — double-click a cable to see its chart and stretches.")
         self.btn_batch.setEnabled(n > 0)
+        self.btn_batch.setText("Export report… (all cables)")
         for b_, t_ in ((self.btn_csv, "Export CSV… (all cables)"), (self.btn_shp, "Export GIS… (all cables)"),
                        (self.btn_png, "Save charts… (all cables)")):
             b_.setText(t_)
@@ -834,6 +835,7 @@ class CableDialog(QDialog):
 
     def clear_batch(self):
         self.batch = None
+        self.btn_batch.setText("Export report…")
         for b_, t_ in ((self.btn_csv, "Export CSV…"), (self.btn_shp, "Export GIS…"), (self.btn_png, "Save chart…")):
             b_.setText(t_)
         j = self.cmb_table.findData("batch")

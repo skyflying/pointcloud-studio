@@ -28,6 +28,7 @@ _ICONS = {
     "redo": '<path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>',
     "restore": '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
     "export": '<path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19.5h14"/>',
+    "annotate": '<path d="M4 20l1-4 10-10 3 3-10 10-4 1z"/><path d="M13 7l3 3"/><path d="M3 22h18" stroke-dasharray="2 2"/>',
     "section": '<path d="M3.5 18.5l5.5-9 5 4.5 6.5-9.5"/><circle cx="3.5" cy="18.5" r="1.6" fill="{a}" stroke="{a}"/><circle cx="9" cy="9.5" r="1.6" fill="{a}" stroke="{a}"/><circle cx="14" cy="14" r="1.6" fill="{a}" stroke="{a}"/><circle cx="20.5" cy="4.5" r="1.6" fill="{a}" stroke="{a}"/>',
     "subset": '<path d="M3.5 9.5l11-6 6 11-11 6z"/><circle cx="9" cy="12.5" r="1.1" fill="{a}" stroke="{a}"/><circle cx="12.5" cy="10" r="1.1" fill="{a}" stroke="{a}"/><circle cx="14" cy="14" r="1.1" fill="{a}" stroke="{a}"/>',
     "add": '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 10v6M9 13h6"/>',

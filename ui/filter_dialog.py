@@ -170,7 +170,8 @@ class FilterDialog(QDialog):
         w["cube_kf"] = _dspin(3.0, 1.0, 10, 0.25, 2, " σ")
         w["cube_dis"] = QComboBox()
         for k, t in (("locale", "Locale — agree with the neighbourhood"), ("density", "Density — most soundings"),
-                     ("prior", "Prior — closest to a reference surface")):
+                     ("prior", "Prior — closest to a reference surface"),
+                     ("shoal", "Shoal — shoalest well-supported (navigation)")):
             w["cube_dis"].addItem(t, k)
         w["cube_surf"] = QComboBox()
         w["cube_layers"] = QCheckBox("Add the CUBE depth, uncertainty (95 %) and hypothesis-count grids as layers")

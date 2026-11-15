@@ -46,7 +46,7 @@ def _hypotheses(node, z, var):
 
 def estimate(xyz, idx, tvu1, thu1=None, resolution=1.0, capture_pct=5.0, k_h=3.0, k_f=3.0, s_h=1.96, alpha=2.0,
              disambiguation="locale", prior_z=None, depth_positive_down=True, tile=256, locale_size=11, progress=None,
-             cancel=None):
+             cancel=None, shoal_high=True):
     """Run the estimator on the points idx (tvu1 / thu1: 1σ per point, aligned with idx).
     prior_z: callable (x, y) → z of a reference surface (for disambiguation='prior').
     Returns dict(candidates (point indices), node grids, summary)."""
@@ -164,6 +164,18 @@ def estimate(xyz, idx, tvu1, thu1=None, resolution=1.0, capture_pct=5.0, k_h=3.0
         # fall back to density where the prior is missing
         score[~np.isfinite(pz)] = 1e12 - Hc[~np.isfinite(pz)]
         grp = np.repeat(np.arange(len(first)), n_hyp)
+        o2 = np.lexsort((score, grp))
+        chosen = o2[np.r_[0, np.cumsum(n_hyp)[:-1]]]
+    elif disambiguation == "shoal":
+        # navigation surfaces: per node the shoalest hypothesis that is supported by enough soundings
+        # (≥ 2 and ≥ 10 % of the node's soundings) — a single spike cannot make the surface shoaler
+        grp = np.repeat(np.arange(len(first)), n_hyp)
+        tot = np.bincount(grp, weights=Hc)
+        support = Hc >= np.maximum(2.0, 0.1 * tot[grp])
+        any_sup = np.bincount(grp, weights=support.astype(float)) > 0
+        elig = support | ~any_sup[grp]
+        shoal_sign = -1.0 if shoal_high else 1.0                        # elevation (up +): shoalest = highest
+        score = np.where(elig, shoal_sign * Hm, np.inf)
         o2 = np.lexsort((score, grp))
         chosen = o2[np.r_[0, np.cumsum(n_hyp)[:-1]]]
     elif disambiguation == "locale":

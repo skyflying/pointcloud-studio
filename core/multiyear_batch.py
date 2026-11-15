@@ -154,54 +154,105 @@ def _clean(rows):
     return out
 
 
+def _en(item, i0, i1):
+    P = item["points"]
+    n = len(P["kp"])
+    if i0 is None or n == 0:
+        return {}
+    a, b = max(0, min(int(i0), n - 1)), max(0, min(int(i1), n - 1))
+    return {"e_from": float(P["x"][a]), "n_from": float(P["y"][a]), "e_to": float(P["x"][b]), "n_to": float(P["y"][b])}
+
+
 def workbook_sheets(batch, settings):
-    """{sheet name: list of row dicts} for a batch (also used for one cable: a batch of one)."""
+    """Formatted report sheets (core.report_xlsx) for a batch — also used for one cable (a batch of one)."""
+    from core.report_xlsx import settings_sheet
     items = batch["items"]
-    sheets = {"Summary": _clean([i["row"] for i in items]),
-              "PerYear": _clean([r for i in items for r in i["table"]]),
-              "Interventions": _clean([r for i in items for r in i["interventions"]]),
-              "ReburialStretches": _clean([r for i in items for r in i["first"]]),
-              "Segments": _clean([r for i in items for r in i["segments"]])}
-    pts = []
+    rows = [i["row"] for i in items]
+    cum = any("campaigns" in r for r in rows)
+    has_cost = any("total_cost" in r for r in rows)
+    sc = [("item", "Cable / string", "text"), ("type", "Type", "text"), ("length_m", "Length (m)", "m1"),
+          ("years", "Years", "text"), ("first_reburial", "First re-burial (year)", "year"),
+          ("first_exposed", "First exposed (year)", "year"), ("first_span", "First free span (year)", "year"),
+          ("ever_below_required_m", "Ever below trigger (m)", "m1")]
+    if cum:
+        sc += [("campaigns", "Campaigns (n)", "int"), ("campaign_years", "Campaign years", "text"),
+               ("total_reburial_m", "Total re-burial (m)", "m1"), ("total_hours", "Trencher time (h)", "m1"),
+               ("beyond_trencher", "Beyond trencher (n)", "int")]
+    else:
+        sc += [("worst_year", "Worst year", "year"), ("worst_reburial_m", "Worst-year re-burial (m)", "m1")]
+    if has_cost:
+        sc += [("total_cost", "Total cost", "money"), ("total_cost_pv", "Total cost, present value", "money")]
+    if any("gaps_not_assessed_m" in r for r in rows):
+        sc.append(("gaps_not_assessed_m", "Gaps not assessed (m)", "m1"))
+    sheets = [{"name": "Summary", "columns": sc, "rows": rows,
+               "highlight": lambda r: "bad" if r.get("first_exposed") else ("warn" if r.get("first_reburial") else "good")}]
+    py = [dict(r) for i in items for r in i["table"]]
+    pc = [("item", "Cable / string", "text"), ("year", "Year", "year"), ("data", "Data", "text"),
+          ("dataset", "Seabed dataset", "text"), ("coverage_pct", "Coverage (%)", "pct"),
+          ("min_cover", "Min cover (m)", "m"), ("kp_min_cover", "KP of min cover (km)", "kp"),
+          ("below_target_m", "Below target (m)", "m1"), ("exposed_m", "Exposed (m)", "m1"),
+          ("spans", "Free spans (n)", "int"), ("span_length_m", "Free-span length (m)", "m1"),
+          ("longest_span_m", "Longest free span (m)", "m1"), ("max_gap", "Max gap (m)", "m"),
+          ("reburial_m", "Re-burial needed (m)", "m1"), ("max_lowering", "Max lowering (m)", "m")]
+    if cum:
+        pc += [("reburied_m", "Re-buried (m)", "m1"), ("cable_lowered_max", "Cable lowered, max (m)", "m"),
+               ("cumulative_reburial_m", "Cumulative re-burial (m)", "m1")]
+        if any("settled_m" in r for r in py):
+            pc.append(("settled_m", "Settled onto seabed (m)", "m1"))
+    if has_cost:
+        pc += [("cost", "Cost", "money"), ("cost_pv", "Cost, present value", "money")]
+    sheets.append({"name": "Per year", "columns": pc, "rows": py,
+                   "highlight": lambda r: "bad" if (r.get("exposed_m") or 0) > 0 else
+                   ("warn" if (r.get("reburial_m") or 0) > 0 else None)})
+    fr = []
     for i in items:
-        P = i["points"]
-        for k in range(len(P["kp"])):
-            pts.append({"item": i["item"], "kp": float(P["kp"][k]), "x": float(P["x"][k]), "y": float(P["y"][k]),
-                        "cable_top_initial": float(P["cable_top_initial"][k]),
-                        "cable_top_final": float(P["cable_top_final"][k]), "reburial_count": int(P["count"][k]),
-                        "first_year": float(P["first_year"][k]), "last_year": float(P["last_year"][k])})
-    sheets["Points"] = _clean(pts)
-    sheets["Errors"] = [{"item": a, "error": b} for a, b in batch.get("errors", [])]
-    sheets["Settings"] = [{"item": k, "value": str(v)} for k, v in settings.items()]
-    return {k: v for k, v in sheets.items() if v or k in ("Summary", "Settings")}
+        for r in i["first"]:
+            low = next((v for k, v in r.items() if k.startswith("lowering_")), None)
+            fr.append({"item": i["item"], "first_year": r["first_year"], "kp_from": r["kp_from"], "kp_to": r["kp_to"],
+                       "length_m": r["length_m"], "first_exposed": r.get("first_exposed"),
+                       "first_span": r.get("first_span"), "lowering": low, "times": r.get("times_reburied"),
+                       **_en(i, r.get("i0"), r.get("i1"))})
+    fc = [("item", "Cable / string", "text"), ("first_year", "First needed (year)", "year"),
+          ("kp_from", "KP from (km)", "kp"), ("kp_to", "KP to (km)", "kp"), ("length_m", "Length (m)", "m1"),
+          ("first_exposed", "First exposed (year)", "year"), ("first_span", "First free span (year)", "year"),
+          ("lowering", "Lowering still needed, last year (m)", "m")]
+    if cum:
+        fc.append(("times", "Times re-buried (n)", "int"))
+    fc += [("e_from", "E from", "xy"), ("n_from", "N from", "xy"), ("e_to", "E to", "xy"), ("n_to", "N to", "xy")]
+    sheets.append({"name": "Re-burial stretches", "columns": fc, "rows": fr, "empty": "no re-burial needed"})
+    if cum:
+        iv = [{"item": i["item"], **{k: v for k, v in r.items() if k not in ("i0", "i1", "item")},
+               **_en(i, r.get("i0"), r.get("i1"))} for i in items for r in i["interventions"]]
+        ic = [("item", "Cable / string", "text"), ("year", "Year", "year"), ("data", "Data", "text"),
+              ("kp_from", "KP from (km)", "kp"), ("kp_to", "KP to (km)", "kp"), ("length_m", "Length (m)", "m1"),
+              ("lowering_max", "Lowering, max (m)", "m"), ("lowering_mean", "Lowering, mean (m)", "m"),
+              ("cover_after", "Cover after (m)", "m"), ("hours", "Trencher time (h)", "m1"),
+              ("beyond_trencher", "Beyond trencher", "text"),
+              ("e_from", "E from", "xy"), ("n_from", "N from", "xy"), ("e_to", "E to", "xy"), ("n_to", "N to", "xy")]
+        sheets.append({"name": "Interventions", "columns": ic, "rows": iv,
+                       "highlight": lambda r: "bad" if r.get("beyond_trencher") else None, "empty": "no interventions"})
+    sg = [{"item": i["item"], "year": r["year"], "data": r.get("data"), "type": r["type"], "kp_from": r["kp_from"],
+           "kp_to": r["kp_to"], "length_m": r["length_m"], "value_m": r.get("value_m"), **_en(i, r.get("i0"), r.get("i1"))}
+          for i in items for r in i["segments"]]
+    sheets.append({"name": "Stretches per year",
+                   "columns": [("item", "Cable / string", "text"), ("year", "Year", "year"), ("data", "Data", "text"),
+                               ("type", "Type", "text"), ("kp_from", "KP from (km)", "kp"), ("kp_to", "KP to (km)", "kp"),
+                               ("length_m", "Length (m)", "m1"), ("value_m", "Worst value (m)", "m"),
+                               ("e_from", "E from", "xy"), ("n_from", "N from", "xy"), ("e_to", "E to", "xy"),
+                               ("n_to", "N to", "xy")],
+                   "rows": sg, "highlight": lambda r: "bad" if r["type"] in ("exposed", "span", "free span") else None,
+                   "empty": "none"})
+    errs = batch.get("errors", [])
+    notes = ["Elevations positive up; cover = seabed − cable top; gap = cable top − diameter − seabed.",
+             "Worst value: re-burial / exposed = smallest cover, free span = largest gap (m)."]
+    notes += [f"Not assessed — {a}: {b}" for a, b in errs]
+    sheets.append(settings_sheet(list(settings.items()), notes))
+    return sheets
 
 
-def write_workbook(path, sheets):
-    """Excel (.xlsx, needs openpyxl) — or, without openpyxl, one CSV per sheet next to `path`.
-    Returns the list of files written."""
-    import os
+def write_workbook(path, sheets, title=None):
+    """Formatted Excel (needs openpyxl) — or one CSV per sheet next to `path`. Returns the files written."""
+    from core import report_xlsx
+    return report_xlsx.write(path, sheets, title or "Multi-year cable assessment", "PointCloud Studio")
 
-    import pandas as pd
-    base = os.path.splitext(path)[0]
-    try:
-        import openpyxl  # noqa: F401
-    except ImportError:
-        files = []
-        for name, rows in sheets.items():
-            f = f"{base}_{name}.csv"
-            pd.DataFrame(rows).to_csv(f, index=False, encoding="utf-8-sig")
-            files.append(f)
-        return files
-    with pd.ExcelWriter(base + ".xlsx", engine="openpyxl") as xw:
-        for name, rows in sheets.items():
-            df = pd.DataFrame(rows)
-            if name == "Points" and len(df) > 1_000_000:          # Excel row limit
-                df = df.iloc[:1_000_000]
-            df.to_excel(xw, sheet_name=name[:31], index=False)
-            ws = xw.sheets[name[:31]]
-            ws.freeze_panes = "A2"
-            for col in ws.columns:
-                width = max(len(str(col[0].value or "")), *(len(f"{c.value}") for c in col[1:50] if c.value is not None)) \
-                    if len(col) > 1 else len(str(col[0].value or ""))
-                ws.column_dimensions[col[0].column_letter].width = min(max(width + 2, 8), 40)
-    return [base + ".xlsx"]
+

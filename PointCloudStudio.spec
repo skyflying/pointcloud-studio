@@ -51,6 +51,7 @@ datas += _safe(collect_data_files, "pyproj")       # proj.db (EPSG definitions)
 datas += _safe(collect_data_files, "rasterio")     # bundled GDAL / PROJ data
 
 binaries = _safe(collect_dynamic_libs, "lazrs")    # LAZ codec (Rust extension)
+binaries += _safe(collect_dynamic_libs, "h5py")    # HDF5 library (S-102 export)
 binaries += _safe(collect_dynamic_libs, "cv2")     # OpenCV (photogrammetry) — use opencv-python-HEADLESS:
                                                    # the GUI wheel ships its own Qt, which clashes with PySide6
 datas += _safe(collect_data_files, "cv2")
@@ -81,6 +82,7 @@ if sys.platform == "win32":
 hiddenimports = (
     _safe(collect_submodules, "openpyxl")                 # Excel export (pandas loads it on demand)
     + _safe(collect_submodules, "rasterio")
+    + _safe(collect_submodules, "h5py")                   # S-102 export
     + collect_submodules("vispy.app.backends")
     + collect_submodules("vispy.visuals")
     + ["shapefile",                 # pyshp (route import / contour export)
@@ -96,7 +98,7 @@ hiddenimports = (
 # Optional packages VisPy / pandas may pick up if they are installed — not used by the app.
 excludes = ["tkinter", "matplotlib", "PyQt5", "PyQt6", "PySide2", "IPython", "jupyter", "notebook", "pytest",
             "imageio", "imageio_ffmpeg", "skimage", "PIL", "sklearn", "numba", "llvmlite",
-            "sympy", "networkx", "dask", "pyarrow", "tables", "h5py", "sqlalchemy",
+            "sympy", "networkx", "dask", "pyarrow", "tables", "sqlalchemy",   # h5py is used (S-102)
             "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebChannel",
             "PySide6.Qt3DCore", "PySide6.QtMultimedia", "PySide6.QtQuick", "PySide6.QtQuickWidgets",
             "PySide6.QtQml", "PySide6.QtCharts", "PySide6.QtPdf", "PySide6.QtNetwork",
