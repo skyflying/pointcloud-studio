@@ -5,7 +5,7 @@ A desktop application for viewing, cleaning, and analysing point cloud data from
 <!-- Replace with a real screenshot: save it as docs/screenshot.png -->
 ![PointCloud Studio screenshot](https://raw.githubusercontent.com/skyflying/pointcloud-studio/refs/heads/main/blob/screenshot.png)
 
-**Current version: 0.1.25** · [Releases](../../releases) · [使用說明（繁體中文）](docs/USER_GUIDE.zh-TW.md)
+**Current version: 0.1.25** · [Releases](../../releases) · [使用說明（繁體中文）](docs/USER_GUIDE.zh-TW.md) · [使用説明書（日本語）](docs/USER_GUIDE.ja.md)
 
 ---
 
@@ -219,7 +219,8 @@ pointcloud-studio/
 ├── ui/                      # Main window and dialogs (PySide6)
 ├── tools/                   # Environment check, sample data generator, macOS build helpers
 ├── docs/
-│   └── USER_GUIDE.zh-TW.md  # User guide (Traditional Chinese)
+│   ├── USER_GUIDE.zh-TW.md  # User guide (Traditional Chinese)
+│   └── USER_GUIDE.ja.md     # User guide (Japanese)
 ├── blob/
 │   └── screenshot.png
 ├── .github/workflows/       # Windows and macOS builds on GitHub Actions
@@ -234,6 +235,7 @@ pointcloud-studio/
 ### Releases
 
 #### 0.1.25
+- **Added** — Japanese user guide (`docs/USER_GUIDE.ja.md`), linked from the top of this README and from the Chinese guide.
 - **Added** — Chart menu: vertical datum to chart datum (constant / raster / table separation, S-100 datum recorded with the layer), IHO S-102 3.0.0 export (HDF5, WGS 84 / UTM, validated with GDAL's validate_s102 after writing) and BAG export, chart layers (shoal-biased sounding selection SOUNDG, depth contours DEPCNT, depth areas DEPARE) as vector layers and SHP / GPKG / GeoJSON; CUBE "Shoal" disambiguation. Requires `h5py` for S-102 (added to requirements and the build).
 - **Added** — HD Map menu: HD map point classes and labelling of the selection, annotation mode (A) for lane lines, curbs, stop lines, crosswalks, poles, signs, lights … snapped to the points, semi-automatic lane-marking and pole extraction, lanelets between boundary lines, export to Lanelet2 (OSM) and SHP / GPKG / GeoJSON. Vector layers keep per-feature colours by type.
 - **Fixed** — Lane-marking extraction (tested on simulated mobile-mapping streets: curves R 40 m – straight, 100–1 000 points / m², walls, cars, trees, poles, signs, occlusions): solid lines with an occlusion gap were reported as dashed, curved lines were cut into straight chords and missed on tight curves, sparse scans broke lines into pieces, bright walls / car bodies and bright noise made false lines in unclassified data, zebra-crossing bars became short lane lines, a stop line touching a lane line spoiled both, double centre lines merged. Stop lines are now extracted as stop-line features. Annotation: a double-click that the window system delivers without its click now places the last vertex; Backspace removes the last vertex also when no points are selected or no cloud is being edited. Vertical datum from a raster: points or cells outside the raster are no longer given the edge value (half a pixel beyond). LAS export from a text file whose column is called like a LAS dimension (e.g. "intensity") failed.
