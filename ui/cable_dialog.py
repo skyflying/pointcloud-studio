@@ -6,6 +6,7 @@ cable_add_layers(), cable_add_sections(), cable_clear_overlay().
 """
 from __future__ import annotations
 
+import html
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
@@ -796,8 +797,8 @@ class CableDialog(QDialog):
                                                          f"{s['kp_at_cover_min']:.3f}"))
             if "cover_below_min_length" in s:
                 rows.append(("Cover below minimum", f"{s['cover_below_min_length']:,.1f} m"))
-        self.lbl_sum.setText(f"<b>{res['route']}</b><br>" + "<br>".join(
-            f"<span style='color:{C['muted']}'>{a}:</span> {b}" for a, b in rows))
+        self.lbl_sum.setText(f"<b>{html.escape(str(res['route']))}</b><br>" + "<br>".join(
+            f"<span style='color:{C['muted']}'>{html.escape(a)}:</span> {b}" for a, b in rows))
         self._chart()
         self._fill_table()
         for b in (self.btn_csv, self.btn_shp, self.btn_png, self.btn_clear, self.btn_batch):

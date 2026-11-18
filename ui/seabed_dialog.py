@@ -6,6 +6,7 @@ seabed_clear_overlay(), seabed_goto(row), import_structures().
 """
 from __future__ import annotations
 
+import html
 import re
 
 import numpy as np
@@ -506,7 +507,7 @@ class SeabedDialog(QDialog):
         self.cmb_table.blockSignals(False)
         title = title or res.get("route") or "Result"
         self.lbl_sum.setText(f"<b>{title}</b><br>" + "<br>".join(
-            f"<span style='color:{C['muted']}'>{a}:</span> {b}" for a, b in rows))
+            f"<span style='color:{C['muted']}'>{html.escape(a)}:</span> {b}" for a, b in rows))
         self.w_srow.setVisible(k == "scour")
         self.map.setVisible(k == "scour")
         if k == "scour":

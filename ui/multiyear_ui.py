@@ -2,6 +2,7 @@
 (surveys and modelled seabed predictions) in one run (core/multiyear.py)."""
 from __future__ import annotations
 
+import html
 import os
 import re
 import sys
@@ -757,8 +758,8 @@ class MultiYearDialog(QDialog):
             rows = [r_ for r_ in rows if not r_[0].startswith("Most re-burial")]
         else:
             rows.insert(1, ("Assessment", "independent — every year against the original cable level"))
-        self.lbl_sum.setText(f"<b>{res['route']}</b><br>" + "<br>".join(
-            f"<span style='color:{C['muted']}'>{a}:</span> {b}" for a, b in rows))
+        self.lbl_sum.setText(f"<b>{html.escape(str(res['route']))}</b><br>" + "<br>".join(
+            f"<span style='color:{C['muted']}'>{html.escape(a)}:</span> {b}" for a, b in rows))
         yrs, panels = trend_panels(res)
         self.trend.setVisible(True)
         self.trend.setMinimumHeight(170 * len(panels) + 30)
